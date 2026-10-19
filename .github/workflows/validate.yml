@@ -1,0 +1,29 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $code = Get-Content -Raw ./scripts/install-gh.ps1
+          [void][scriptblock]::Create($code)
+          Write-Host 'Sintaxis OK'
+
+      - name: Smoke check
+        shell: pwsh
+        run: |
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-ci'
+          ./scripts/install-gh.ps1 -Check

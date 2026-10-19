@@ -1,0 +1,15 @@
+# Temporales
+*.tmp
+*.log
+*.zip
+
+# Salidas del instalador
+extract/
+
+# Entornos
+node_modules/
+.venv/
+
+# Sistema
+Thumbs.db
+.DS_Store
