@@ -9,21 +9,130 @@ permissions:
   contents: read
 
 jobs:
-  powershell:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse installer
+      - name: Parse (PowerShell 7)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $code = Get-Content -Raw ./scripts/install-gh.ps1
-          [void][scriptblock]::Create($code)
-          Write-Host 'Sintaxis OK'
+          [void][scriptblock]::Create((Get-Content -Raw ./scripts/install-gh.ps1))
+          Write-Host 'Sintaxis OK (pwsh)'
 
-      - name: Smoke check
+      - name: UTF-8 BOM
         shell: pwsh
         run: |
-          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-ci'
+          $bytes = [System.IO.File]::ReadAllBytes('./scripts/install-gh.ps1')
+          if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            throw 'install-gh.ps1 debe guardarse en UTF-8 con BOM para Windows PowerShell 5.1'
+          }
+          Write-Host 'BOM OK'
+
+      - name: Check (PowerShell 7)
+        shell: pwsh
+        run: |
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-pwsh'
           ./scripts/install-gh.ps1 -Check
+
+      - name: Install and accents (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dst = Join-Path $env:RUNNER_TEMP 'gh51'
+          $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate
+          if ($LASTEXITCODE -ne 0) { throw "La instalacion con 5.1 fallo con codigo $LASTEXITCODE" }
+          $raw = [System.IO.File]::ReadAllText((Join-Path $dsh 'AGENTS.md'))
+          if ($raw -notmatch 'Sesión') { throw 'Acentos corruptos en AGENTS.md con PowerShell 5.1' }
+          if ($raw -notmatch 'configuración') { throw 'Acentos corruptos (configuracion) en AGENTS.md con PowerShell 5.1' }
+          Write-Host 'Instalacion 5.1 OK'
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintaxis
+        run: bash -n scripts/install-gh.sh
+
+      - name: shellcheck
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S warning scripts/install-gh.sh
+          else
+            echo 'shellcheck no disponible en el runner'
+          fi
+
+      - name: Instalar, verificar e idempotencia
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
+          test -x "$RUNNER_TEMP/bin/gh"
+          "$RUNNER_TEMP/bin/gh" --version
+          grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
+          grep -q 'configuración' "$HOME/.dsh/AGENTS.md"
+          second=$(bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update)
+          case "$second" in
+            *"ya instalado"*) ;;
+            *) echo "$second"; echo 'La segunda ejecucion no fue idempotente'; exit 1 ;;
+          esac
+          bash scripts/install-gh.sh --check --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh"
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --uninstall
+          test ! -x "$RUNNER_TEMP/bin/gh"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintaxis
+        run: bash -n scripts/install-gh.sh
+
+      - name: Instalar y verificar
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
+          test -x "$RUNNER_TEMP/bin/gh"
+          "$RUNNER_TEMP/bin/gh" --version
+          grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
+
+  block-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: El bloque de AGENTS.md es identico en ambos scripts
+        run: |
+          python3 - <<'PY'
+          import difflib
+          import re
+          import sys
+
+          pattern = re.compile(
+              r'<!-- dsh-github-cli:begin \(bloque gestionado.*?<!-- dsh-github-cli:end -->',
+              re.S,
+          )
+
+          def block(path):
+              text = open(path, encoding='utf-8-sig').read().replace('\r\n', '\n')
+              match = pattern.search(text)
+              if not match:
+                  sys.exit(f'No se encontro el bloque gestionado en {path}')
+              return match.group(0)
+
+          a = block('scripts/install-gh.ps1')
+          b = block('scripts/install-gh.sh')
+          if a != b:
+              diff = difflib.unified_diff(
+                  a.splitlines(), b.splitlines(), 'install-gh.ps1', 'install-gh.sh', lineterm=''
+              )
+              print('\n'.join(diff))
+              sys.exit('El bloque de AGENTS.md difiere entre los dos instaladores')
+          print('Bloque identico en los dos instaladores')
+          PY

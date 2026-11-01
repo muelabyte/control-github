@@ -17,8 +17,12 @@ credenciales ni detalles explotables en issues públicos.
   `AGENTS.md` prohíben crear, borrar o cambiar configuración sin petición
   explícita.
 - **One-liner.** Ejecuta código remoto: apunta a un tag inmutable, no a `main`.
-  La release publica el SHA256 del script. Si prefieres revisar antes, descarga
-  el `.ps1` y ejecútalo con `-File`.
+  La release publica el SHA256 de `install-gh.ps1` e `install-gh.sh`. Si prefieres
+  revisar antes, descarga el script y ejecútalo en local.
+- **TLS.** El instalador de Windows fuerza TLS 1.2 antes de descargar, para
+  evitar la negociación TLS 1.0 de Windows PowerShell 5.1 en Windows 10.
+- **Plataformas.** Windows 10/11 (PowerShell 5.1 o 7), Linux glibc y macOS.
+  El binario se verifica por SHA256 en las tres.
 - **Ramas.** El scope `repo` permite escribir en ramas. Para protegerlas,
   activa branch protection o rulesets en GitHub.
 

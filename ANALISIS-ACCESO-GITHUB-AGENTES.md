@@ -96,7 +96,7 @@ Con flags, por ejemplo diagnóstico:
 
 > El one-liner descarga y ejecuta código del repositorio. Por eso debe apuntar a un **tag inmutable**, nunca a `main`, y conviene publicar el SHA256 del script en la release. Quien prefiera revisar antes: `irm ... -OutFile install-gh.ps1`, leerlo y ejecutarlo con `-File`.
 
-> **Requisito:** ejecuta el instalador con **PowerShell 7 (`pwsh`)**, no con Windows PowerShell 5.1. El script se guarda en UTF-8 sin BOM (necesario para `irm | iex`); 5.1 lo leería como ANSI y corrompería los acentos del `AGENTS.md` generado. Si se ejecuta con 5.1, el script se detiene con un mensaje claro.
+> **Requisito:** funciona tanto con **Windows PowerShell 5.1** como con **PowerShell 7 (`pwsh`)**. El script se guarda en UTF-8 **con BOM**, de modo que 5.1 lo lee correctamente también con `-File`; con `irm | iex` el texto llega ya decodificado y el BOM es irrelevante. En 5.1 el script fuerza TLS 1.2 antes de descargar.
 
 ### 3.2 Qué imprime el script
 
@@ -452,7 +452,8 @@ Comprobar scopes: `gh auth status` debe listar `repo`, `read:org`, `gist`, `work
 - `gh 2.102.0` instalado en `C:\Users\muela\.local\bin\gh.exe`.
 - Sesión activa como `muelabyte`.
 - `~/.dsh/AGENTS.md` configurado (sin bloque gestionado todavía; el script lo migra si se ejecuta).
-- `scripts/install-gh.ps1` validado en `-Check` con PowerShell 7 y en ejecución piped contra un `DSH_HOME` temporal; con Windows PowerShell 5.1 se detiene con un aviso (evita acentos corruptos).
+- `scripts/install-gh.ps1` validado en `-Check` y en instalación real con PowerShell 7 y con Windows PowerShell 5.1 (UTF-8 con BOM) contra un `DSH_HOME` temporal, incluidos los acentos del bloque generado.
+- `scripts/install-gh.sh` cubre Linux y macOS (bash 3.2+), con paridad de opciones y el mismo bloque gestionado; validado en Linux (amd64) y en CI.
 - La carpeta `skills/` se eliminó: no hay skill.
 
 ### 13.3 Fuentes

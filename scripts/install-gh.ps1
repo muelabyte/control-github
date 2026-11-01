@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Instala y configura GitHub CLI (gh) portable para usarlo desde DSH.
 
@@ -70,14 +70,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# TLS 1.2 explicito: Windows 10/11 con Windows PowerShell 5.1 puede seguir
+# negociando TLS 1.0 por defecto y GitHub rechaza la conexion.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+# La barra de progreso de Invoke-WebRequest ralentiza y parece colgada en 5.1.
+$ProgressPreference = 'SilentlyContinue'
+
 $script:BeginMarker = '<!-- dsh-github-cli:begin'
 $script:EndMarker = '<!-- dsh-github-cli:end -->'
 $script:GhostPath = Join-Path $InstallDir 'gh.exe'
 
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    Write-Host 'ERROR: este instalador necesita PowerShell 7 (pwsh) para conservar los acentos del bloque de AGENTS.md. Ejemplo: pwsh -NoProfile -File .\scripts\install-gh.ps1'
-    exit 1
-}
+# Compatible con Windows PowerShell 5.1 y PowerShell 7. El archivo se guarda en
+# UTF-8 con BOM para que 5.1 no corrompa los acentos al ejecutarlo con -File;
+# con 'irm | iex' el texto llega ya decodificado y el BOM es irrelevante.
 
 function Write-Step([string]$Message) { Write-Host "[INFO] $Message" }
 function Write-Ok([string]$Message) { Write-Host "[OK]   $Message" }
@@ -185,8 +192,8 @@ function New-InstructionsBlock([string]$GhExe) {
     $ghLogin = Get-GhLogin $GhExe
     if ($ghLogin) {
         $authBlock = @'
-- Sesión activa en `github.com` como `__LOGIN__` (token en el Administrador de
-  credenciales de Windows; el login web concede `repo`, `read:org`, `gist` y
+- Sesión activa en `github.com` como `__LOGIN__` (token en el gestor de
+  credenciales del sistema; el login web concede `repo`, `read:org`, `gist` y
   `workflow`). Verifica con `gh auth status`; el login real, con
   `gh api user --jq .login`.
 '@
@@ -202,7 +209,7 @@ function New-InstructionsBlock([string]$GhExe) {
     }
 
     $block = @'
-<!-- dsh-github-cli:begin (bloque gestionado por install-gh.ps1; no editar a mano) -->
+<!-- dsh-github-cli:begin (bloque gestionado; no editar a mano) -->
 ## GitHub — usar GitHub CLI (`gh`)
 
 Toda pregunta sobre GitHub (repositorios, issues, PRs, releases, Actions, gists o
@@ -330,7 +337,8 @@ try {
             }
         }
         Write-Next 'La sesion de GitHub sigue guardada. Para cerrarla: gh auth logout --hostname github.com'
-        exit 0
+        $global:LASTEXITCODE = 0
+        return
     }
 
     $installedVersion = Get-GhVersion $script:GhostPath
@@ -350,7 +358,8 @@ try {
             else { Write-Warn 'AGENTS.md existe sin bloque gestionado (se migrara al ejecutar la instalacion)' }
         }
         else { Write-Warn 'AGENTS.md no existe' }
-        exit 0
+        $global:LASTEXITCODE = 0
+        return
     }
 
     if (-not $UpdateInstructionsOnly) {
@@ -423,5 +432,7 @@ try {
 }
 catch {
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    if ($PSCommandPath) { exit 1 }
+    $global:LASTEXITCODE = 1
+    return
 }
