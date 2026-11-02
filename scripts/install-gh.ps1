@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Instala y configura GitHub CLI (gh) portable para usarlo desde DSH.
 
@@ -71,6 +71,21 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 lee los archivos UTF-8 sin BOM como ANSI. Para que
+# '-File' conserve los acentos, nos releemos en UTF-8 y nos reejecutamos una vez.
+# Con 'irm | iex' el contenido llega ya decodificado y este bloque no actua.
+if ($PSVersionTable.PSVersion.Major -lt 7 -and $PSCommandPath) {
+    $fileBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
+    $hasBom = ($fileBytes.Length -ge 3 -and $fileBytes[0] -eq 0xEF -and
+        $fileBytes[1] -eq 0xBB -and $fileBytes[2] -eq 0xBF)
+    if (-not $hasBom -and -not $global:__DshGhReexec) {
+        $global:__DshGhReexec = $true
+        $utf8Text = [System.Text.Encoding]::UTF8.GetString($fileBytes)
+        & ([scriptblock]::Create($utf8Text)) @PSBoundParameters
+        exit $LASTEXITCODE
+    }
+}
+
 # TLS 1.2 explicito: Windows 10/11 con Windows PowerShell 5.1 puede seguir
 # negociando TLS 1.0 por defecto y GitHub rechaza la conexion.
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
@@ -83,8 +98,8 @@ $script:EndMarker = '<!-- dsh-github-cli:end -->'
 $script:GhostPath = Join-Path $InstallDir 'gh.exe'
 
 # Compatible con Windows PowerShell 5.1 y PowerShell 7. El archivo se guarda en
-# UTF-8 con BOM para que 5.1 no corrompa los acentos al ejecutarlo con -File;
-# con 'irm | iex' el texto llega ya decodificado y el BOM es irrelevante.
+# UTF-8 sin BOM para que 'irm | iex' lo parsee; 5.1 usa el bloque de reejecucion
+# de arriba para conservar los acentos al ejecutarlo con -File.
 
 function Write-Step([string]$Message) { Write-Host "[INFO] $Message" }
 function Write-Ok([string]$Message) { Write-Host "[OK]   $Message" }

@@ -21,20 +21,31 @@ jobs:
           [void][scriptblock]::Create((Get-Content -Raw ./scripts/install-gh.ps1))
           Write-Host 'Sintaxis OK (pwsh)'
 
-      - name: UTF-8 BOM
+      - name: No BOM (irm | iex)
         shell: pwsh
         run: |
           $bytes = [System.IO.File]::ReadAllBytes('./scripts/install-gh.ps1')
-          if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
-            throw 'install-gh.ps1 debe guardarse en UTF-8 con BOM para Windows PowerShell 5.1'
+          if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw 'install-gh.ps1 no debe tener BOM: rompe irm | iex y [scriptblock]::Create'
           }
-          Write-Host 'BOM OK'
+          Write-Host 'Sin BOM OK'
 
       - name: Check (PowerShell 7)
         shell: pwsh
         run: |
           $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-pwsh'
           ./scripts/install-gh.ps1 -Check
+
+      - name: Parse like irm (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-irm'
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\scripts\install-gh.ps1))
+          $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+          $sb = [scriptblock]::Create($text)
+          & $sb -Check
+          Write-Host 'Parse irm OK'
 
       - name: Install (Windows PowerShell 5.1)
         shell: powershell
