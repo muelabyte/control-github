@@ -69,6 +69,9 @@ param(
     [switch]$Uninstall
 )
 
+# Un -InstallDir explicito autoriza instalar en paralelo a otra copia de gh.
+$explicitInstallDir = $PSBoundParameters.ContainsKey('InstallDir')
+
 $ErrorActionPreference = 'Stop'
 
 # Windows PowerShell 5.1 lee los archivos UTF-8 sin BOM como ANSI. Para que
@@ -139,6 +142,53 @@ function Get-GhLogin([string]$GhExe) {
     finally { $ErrorActionPreference = $previous }
 }
 
+function Get-GhOnPath {
+    $command = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $command) { return $null }
+    return $command.Source
+}
+
+function Test-SamePath([string]$Left, [string]$Right) {
+    if (-not $Left -or -not $Right) { return $false }
+    try {
+        $a = [System.IO.Path]::GetFullPath($Left)
+        $b = [System.IO.Path]::GetFullPath($Right)
+    }
+    catch { return $false }
+    return ($a -ieq $b)
+}
+
+function Compare-Semver([string]$Left, [string]$Right) {
+    try {
+        $a = @($Left -split '\.' | ForEach-Object { [int]$_ })
+        $b = @($Right -split '\.' | ForEach-Object { [int]$_ })
+    }
+    catch { return 0 }
+    $count = [Math]::Max($a.Count, $b.Count)
+    for ($i = 0; $i -lt $count; $i++) {
+        $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+        $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+        if ($x -gt $y) { return 1 }
+        if ($x -lt $y) { return -1 }
+    }
+    return 0
+}
+
+function Get-InstallAction([string]$Installed, [string]$Target, [string]$OtherGh, [bool]$TargetExists) {
+    if (-not $Installed) {
+        if ($TargetExists) { return 'Repair' }
+        if ($OtherGh -and -not $explicitInstallDir) { return 'BlockedOther' }
+        return 'Install'
+    }
+    if ($Installed -eq $Target) {
+        if ($Force) { return 'Reinstall' }
+        return 'NoOp'
+    }
+    if ($Force) { return 'Replace' }
+    return 'BlockedVersion'
+}
+
 function Get-ReleaseAssetArch {
     if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { return 'windows_arm64' }
     return 'windows_amd64'
@@ -181,18 +231,26 @@ function Install-FromZip([string]$ZipPath, [string]$DestinationGh) {
     if (-not $exe) { throw 'El ZIP descargado no contiene bin\gh.exe' }
     $parent = Split-Path -Parent $DestinationGh
     if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    Copy-Item -LiteralPath $exe.FullName -Destination $DestinationGh -Force
+    $staged = "$DestinationGh.new"
+    Copy-Item -LiteralPath $exe.FullName -Destination $staged -Force
+    try {
+        Move-Item -LiteralPath $staged -Destination $DestinationGh -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        throw "No se pudo reemplazar $DestinationGh (puede estar en uso). Cierra gh y reintenta."
+    }
     Write-Ok "gh.exe copiado a $DestinationGh"
 }
 
 function Ensure-UserPath([string]$Directory) {
     if (Test-CommandPath $Directory) {
         Write-Ok "La carpeta ya esta en el PATH de esta sesion"
-        return
+        return $false
     }
     if ($NoPathUpdate) {
         Write-Warn "La carpeta no esta en el PATH (se omite -NoPathUpdate)"
-        return
+        return $false
     }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ($null -eq $userPath) { $userPath = '' }
@@ -204,6 +262,7 @@ function Ensure-UserPath([string]$Directory) {
     }
     $env:PATH = $env:PATH.TrimEnd(';') + ';' + $Directory
     Write-Ok "PATH actualizado en esta sesion"
+    return $true
 }
 
 function New-InstructionsBlock([string]$GhExe) {
@@ -365,32 +424,101 @@ try {
     $installedVersion = Get-GhVersion $script:GhostPath
     $ghLogin = Get-GhLogin $script:GhostPath
     $arch = Get-ReleaseAssetArch
+    $targetExists = Test-Path -LiteralPath $script:GhostPath
+    $otherGh = Get-GhOnPath
+    $otherGhVersion = $null
+    if ($otherGh -and -not (Test-SamePath $otherGh $script:GhostPath)) {
+        $otherGhVersion = Get-GhVersion $otherGh
+    }
+    $action = 'None'
 
     if ($Check) {
         if ($installedVersion) { Write-Ok "gh $installedVersion instalado en $script:GhostPath" }
+        elseif ($targetExists) { Write-Warn "Existe $script:GhostPath pero no responde" }
         else { Write-Warn "gh no esta instalado en $script:GhostPath" }
+        if ($otherGh -and -not (Test-SamePath $otherGh $script:GhostPath)) {
+            $suffix = if ($otherGhVersion) { " (version $otherGhVersion)" } else { '' }
+            Write-Warn "Otra instalacion en el PATH: $otherGh$suffix"
+        }
         if ($ghLogin) { Write-Ok "Sesion iniciada como $ghLogin" }
         else { Write-Warn 'Sin sesion de GitHub (falta gh auth login)' }
         Write-Ok ("PATH: " + $(if (Test-CommandPath $InstallDir) { 'correcto' } else { 'falta ' + $InstallDir }))
         $agentsPath = Join-Path $DshHome 'AGENTS.md'
         if (Test-Path -LiteralPath $agentsPath) {
             $raw = [System.IO.File]::ReadAllText($agentsPath)
-            if ($raw.IndexOf($script:BeginMarker) -ge 0) { Write-Ok "AGENTS.md con bloque gestionado" }
+            if ($raw.IndexOf($script:BeginMarker) -ge 0) { Write-Ok 'AGENTS.md con bloque gestionado' }
             else { Write-Warn 'AGENTS.md existe sin bloque gestionado (se migrara al ejecutar la instalacion)' }
         }
         else { Write-Warn 'AGENTS.md no existe' }
+
+        if ($Version -eq 'latest') {
+            Write-Next 'Accion: resolveria la ultima estable (requiere red) y la compararia con la instalada.'
+        }
+        else {
+            $planned = Get-InstallAction -Installed $installedVersion -Target $Version -OtherGh $otherGh -TargetExists $targetExists
+            switch ($planned) {
+                'NoOp' { Write-Ok "Accion: sin cambios en el binario (gh $installedVersion)" }
+                'Install' { Write-Next "Accion: instalaria gh $Version" }
+                'Repair' { Write-Warn "Accion: repararia $script:GhostPath" }
+                'BlockedOther' { Write-Warn 'Accion: bloqueado; ya hay otra instalacion (usa -Force o -InstallDir)' }
+                'BlockedVersion' { Write-Warn "Accion: requiere -Force para reemplazar gh $installedVersion por $Version" }
+                'Replace' { Write-Warn "Accion: reemplazaria gh $installedVersion por $Version (-Force)" }
+                'Reinstall' { Write-Next "Accion: reinstalaria gh $installedVersion (-Force)" }
+            }
+        }
         $global:LASTEXITCODE = 0
         return
     }
 
     if (-not $UpdateInstructionsOnly) {
-        $needsInstall = $true
-        if ($installedVersion -and -not $Force) {
-            $wanted = $Version
-            if ($wanted -eq 'latest' -or $installedVersion -eq $wanted) { $needsInstall = $false }
+        if ($Version -eq 'latest') {
+            $Version = Resolve-LatestVersion
+            Write-Step "Ultima version estable: $Version"
         }
 
-        if ($needsInstall) {
+        $action = Get-InstallAction -Installed $installedVersion -Target $Version -OtherGh $otherGh -TargetExists $targetExists
+
+        switch ($action) {
+            'BlockedOther' {
+                $suffix = if ($otherGhVersion) { " (version $otherGhVersion)" } else { '' }
+                Write-Warn "Ya hay gh instalado en $otherGh$suffix."
+                Write-Warn "No se instalo una segunda copia en $script:GhostPath."
+                Write-Next 'Para instalar en paralelo: repite el comando con -Force'
+                Write-Next 'Para elegir otra carpeta: -InstallDir RUTA'
+                Write-Next 'Para usar la existente: gh --version'
+                if ($PSCommandPath) { exit 2 }
+                $global:LASTEXITCODE = 2
+                return
+            }
+            'BlockedVersion' {
+                Write-Warn "gh $installedVersion instalado en $script:GhostPath"
+                if ((Compare-Semver $installedVersion $Version) -gt 0) {
+                    Write-Warn "La version solicitada ($Version) es anterior: seria un downgrade. No se modifico nada."
+                }
+                else {
+                    Write-Warn "La version solicitada ($Version) es distinta de la instalada. No se modifico nada."
+                }
+                Write-Next "Para reemplazar por ${Version}: repite el comando con -Force"
+                Write-Next 'Para conservar la actual: no hagas nada'
+                Write-Next 'Para instalar en otra carpeta: -InstallDir RUTA'
+                if ($PSCommandPath) { exit 2 }
+                $global:LASTEXITCODE = 2
+                return
+            }
+            'Repair' { Write-Warn "Existe $script:GhostPath pero no responde; se repara." }
+            'Replace' {
+                if ((Compare-Semver $installedVersion $Version) -gt 0) {
+                    Write-Warn "Reemplazando gh $installedVersion por $Version (downgrade solicitado con -Force)."
+                }
+                else {
+                    Write-Step "Actualizando gh $installedVersion -> $Version (-Force)."
+                }
+            }
+            'Reinstall' { Write-Step "Reinstalando gh $installedVersion (-Force)." }
+            'NoOp' { Write-Ok "gh $installedVersion ya instalado; sin cambios en el binario." }
+        }
+
+        if ($action -in @('Install', 'Repair', 'Replace', 'Reinstall')) {
             $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('gh-install-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $temp -Force | Out-Null
             try {
@@ -418,15 +546,18 @@ try {
             if (-not $installedVersion) { throw 'gh no responde tras la instalacion' }
             Write-Ok "gh $installedVersion operativo"
         }
-        else {
-            Write-Ok "gh $installedVersion ya instalado (usa -Force para reinstalar)"
-        }
     }
     else {
         if (-not $installedVersion) { throw 'No hay gh instalado; ejecuta el instalador sin -UpdateInstructionsOnly' }
     }
 
-    if (-not $NoPathUpdate) { Ensure-UserPath $InstallDir }
+    $pathChanged = $false
+    if (-not $NoPathUpdate) { $pathChanged = Ensure-UserPath $InstallDir }
+
+    $resolvedGh = Get-GhOnPath
+    if ($resolvedGh -and -not (Test-SamePath $resolvedGh $script:GhostPath)) {
+        Write-Warn "El comando 'gh' del PATH apunta a $resolvedGh, no a $script:GhostPath. Ajusta el PATH o invoca la ruta absoluta."
+    }
 
     if ($Login -and -not $ghLogin) {
         Write-Step 'Iniciando login web de GitHub. El codigo de 8 caracteres lo genera gh en este equipo, no GitHub: aparece como "First copy your one-time code" y se pega en https://github.com/login/device. No es el codigo 2FA. Si no lo ves, Ctrl+C y repite: se genera uno nuevo.'
@@ -461,6 +592,15 @@ try {
 
     # 'gh auth status' sin sesion deja LASTEXITCODE=1 aunque sea un caso
     # esperado; el exito del script debe reflejarse como 0 en el proceso.
+    $summary = @()
+    if ($action -in @('Install', 'Repair', 'Replace', 'Reinstall')) {
+        $summary += "binario gh $installedVersion"
+    }
+    if ($pathChanged) { $summary += 'PATH' }
+    if ($result -ne 'sin cambios') { $summary += "AGENTS.md ($result)" }
+    if ($summary.Count -eq 0) { Write-Ok 'Resumen: sin cambios.' }
+    else { Write-Ok ("Resumen: " + ($summary -join '; ')) }
+
     $global:LASTEXITCODE = 0
 }
 catch {

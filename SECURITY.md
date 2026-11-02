@@ -19,6 +19,9 @@ credenciales ni detalles explotables en issues públicos.
 - **One-liner.** Ejecuta código remoto: apunta a un tag inmutable, no a `main`.
   La release publica el SHA256 de `install-gh.ps1` e `install-gh.sh`. Si prefieres
   revisar antes, descarga el script y ejecútalo en local.
+- **No reemplaza instalaciones existentes sin `-Force`.** Si la versión difiere,
+  el instalador no toca el binario y termina con código 2. Tampoco borra
+  credenciales, configuración de `gh` ni otras copias.
 - **TLS.** El instalador de Windows fuerza TLS 1.2 antes de descargar, para
   evitar la negociación TLS 1.0 de Windows PowerShell 5.1 en Windows 10.
 - **Plataformas.** Windows 10/11 (PowerShell 5.1 o 7), Linux glibc y macOS.

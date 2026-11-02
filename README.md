@@ -7,7 +7,7 @@ Instalador de **una sola ejecución** que deja GitHub CLI (`gh`) listo para usar
 - lo deja en el **PATH** del usuario,
 - configura el bloque de GitHub en `~/.dsh/AGENTS.md` (o `$DSH_HOME/AGENTS.md`),
 - **guía el login** web y explica de dónde sale el código de 8 dígitos,
-- es idempotente: repetirlo no duplica nada ni vuelve a descargar.
+- es idempotente: si la versión coincide no descarga ni reemplaza nada; si difiere, no toca el binario y te dice qué hacer.
 
 > Proyecto no oficial. No está afiliado a GitHub ni a DeepSeek.
 
@@ -18,43 +18,43 @@ Instalador de **una sola ejecución** que deja GitHub CLI (`gh`) listo para usar
 ### Windows (PowerShell 5.1 o 7)
 
 ```powershell
-irm https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.ps1 | iex
+irm https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1 | iex
 ```
 
 Con login incluido:
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.ps1'))) -Login
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Login
 ```
 
 Desde `cmd.exe` o Win+R:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1 | iex"
 ```
 
 Diagnóstico, sin instalar nada:
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.ps1'))) -Check
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Check
 ```
 
 ### Linux y macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.sh | bash
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash
 ```
 
 Con login incluido:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.sh | bash -s -- --login
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --login
 ```
 
 Diagnóstico:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.1.0/scripts/install-gh.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --check
 ```
 
 ### Copia local (sin ejecutar código remoto)
@@ -72,12 +72,12 @@ bash ./scripts/install-gh.sh
 
 ```powershell
 # Windows
-irm https://github.com/muelabyte/control-github/releases/download/v1.1.0/install-gh.ps1 | iex
+irm https://github.com/muelabyte/control-github/releases/download/v1.2.0/install-gh.ps1 | iex
 ```
 
 ```bash
 # Linux / macOS
-curl -fsSL https://github.com/muelabyte/control-github/releases/download/v1.1.0/install-gh.sh | bash
+curl -fsSL https://github.com/muelabyte/control-github/releases/download/v1.2.0/install-gh.sh | bash
 ```
 
 ---
@@ -135,6 +135,41 @@ El bloque gestionado lleva marcadores (`dsh-github-cli:begin` / `end`) y es idem
 
 ---
 
+## Si ya está instalado
+
+El instalador **no limpia nada ni hace una instalación desde cero**. No toca credenciales, ni la configuración de `gh`, ni otras copias. Solo puede cambiar el binario de su carpeta destino, el PATH y el bloque de `AGENTS.md`:
+
+| Estado detectado | Sin flags | Con `-Force` |
+|---|---|---|
+| No hay `gh` | Instala | Reinstala |
+| `gh` en destino, **misma versión** | Sin descarga; solo completa PATH/`AGENTS.md` si falta | Reinstala el binario |
+| `gh` en destino, **versión distinta** (más nueva o más vieja) | **No toca nada**; avisa y sale con código 2 | Reemplaza, avisando si es downgrade |
+| `gh` en destino **corrupto** | Lo repara | Lo repara |
+| `gh` en el PATH en **otra ruta**, destino vacío | **No duplica**; avisa y sale con código 2 | Instala en paralelo |
+| Tras instalar, `gh` del PATH apunta a otra ruta | Avisa del conflicto de PATH | Igual |
+
+Mensajes y códigos de salida:
+
+- `0`: éxito, instalación o **sin cambios**.
+- `2`: acción bloqueada; repite con `-Force` / `--force` si quieres reemplazar o duplicar.
+- `1`: error real (red, SHA256, permisos, binario en uso).
+
+Antes de tocar nada puedes simular la decisión:
+
+```powershell
+# Windows
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Check
+```
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --check
+```
+
+`-Check` muestra la versión instalada, si hay otra copia en el PATH y la acción prevista (`Sin cambios`, `Instalaría`, `Repararía`, `Requiere -Force`).
+
+---
+
 ## Opciones
 
 ### Windows (`install-gh.ps1`)
@@ -144,7 +179,7 @@ El bloque gestionado lleva marcadores (`dsh-github-cli:begin` / `end`) y es idem
 | `-Check` | Solo diagnóstico: no descarga, no escribe, no modifica nada |
 | `-Login` | Tras instalar, lanza `gh auth login --web` y muestra el código |
 | `-Version <x.y.z>` | Instala una versión concreta; `latest` para la última estable |
-| `-Force` | Reinstala aunque la versión coincida |
+| `-Force` | Reinstala y es la única vía para cambiar de versión, incluido un downgrade |
 | `-NoPathUpdate` | No añade la carpeta al PATH del usuario |
 | `-UpdateInstructionsOnly` | No instala; solo actualiza `AGENTS.md` |
 | `-Uninstall` | Elimina `gh.exe` y el bloque gestionado de `AGENTS.md` |
@@ -156,7 +191,7 @@ El bloque gestionado lleva marcadores (`dsh-github-cli:begin` / `end`) y es idem
 | `--check` | Solo diagnóstico: no descarga, no escribe |
 | `--login` | Tras instalar, lanza `gh auth login --web` |
 | `--version X` | Instala una versión concreta; `latest` para la última estable |
-| `--force` | Reinstala aunque la versión coincida |
+| `--force` | Reinstala y es la única vía para cambiar de versión, incluido un downgrade |
 | `--install-dir RUTA` | Carpeta destino (por defecto `~/.local/bin`) |
 | `--dsh-home RUTA` | Carpeta de DSH (por defecto `~/.dsh`) |
 | `--no-path-update` | No modifica el rc del shell |
@@ -233,6 +268,8 @@ El resultado: una sesión nueva puede responder «lista mis repositorios públic
 | Bloqueado por ExecutionPolicy | Añade `-ExecutionPolicy Bypass` al comando. |
 | `AGENTS.md` no se aplica | Verifica `%USERPROFILE%\.dsh\AGENTS.md` o `~/.dsh/AGENTS.md` y abre una sesión nueva. |
 | El one-liner no funciona | El repo debe ser público y el tag debe existir. Usa la copia local. |
+| Salió con código 2 y no instaló nada | Ya había otra versión u otra copia. Lee el mensaje: usa `-Force` para reemplazar o `-InstallDir RUTA` para otra carpeta. |
+| Quiero actualizar a la última | `-Version latest -Force` (o `--version latest --force`). Sin `-Force`, una instalación existente no se toca. |
 | Error de TLS/SSL en Windows 10 | Actualiza Windows o usa PowerShell 7: el script ya fuerza TLS 1.2. |
 
 ---

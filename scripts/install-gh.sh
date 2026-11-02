@@ -15,6 +15,7 @@ set -euo pipefail
 VERSION="${GH_VERSION:-2.102.0}"
 INSTALL_DIR="${GH_INSTALL_DIR:-$HOME/.local/bin}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+INSTALL_DIR_SET=0
 LOGIN=0
 CHECK=0
 FORCE=0
@@ -73,8 +74,9 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || die '--install-dir necesita un valor'
             INSTALL_DIR="$1"
+            INSTALL_DIR_SET=1
             ;;
-        --install-dir=*) INSTALL_DIR="${1#*=}" ;;
+        --install-dir=*) INSTALL_DIR="${1#*=}"; INSTALL_DIR_SET=1 ;;
         --dsh-home)
             shift
             [ $# -gt 0 ] || die '--dsh-home necesita un valor'
@@ -123,6 +125,57 @@ gh_login() {
     [ -x "$1" ] || return 1
     "$1" auth status >/dev/null 2>&1 || return 1
     "$1" api user --jq .login 2>/dev/null | head -n 1
+}
+
+resolve_path() {
+    if have readlink; then
+        resolved=$(readlink -f "$1" 2>/dev/null || true)
+        if [ -n "$resolved" ]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+    (cd "$(dirname "$1")" 2>/dev/null && printf '%s/%s\n' "$(pwd)" "$(basename "$1")")
+}
+
+same_path() {
+    [ "$(resolve_path "$1")" = "$(resolve_path "$2")" ]
+}
+
+gh_on_path() {
+    command -v gh 2>/dev/null | head -n 1 || true
+}
+
+semver_gt() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        n = split(a, x, ".")
+        m = split(b, y, ".")
+        for (i = 1; i <= 3; i++) {
+            xi = (i <= n ? x[i] + 0 : 0)
+            yi = (i <= m ? y[i] + 0 : 0)
+            if (xi > yi) exit 0
+            if (xi < yi) exit 1
+        }
+        exit 1
+    }'
+}
+
+resolve_action() {
+    if [ -z "$installed_version" ]; then
+        if [ "$target_exists" -eq 1 ]; then
+            printf 'repair'
+        elif [ "$other_gh_is_other" -eq 1 ] && [ "$INSTALL_DIR_SET" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+            printf 'blocked_other'
+        else
+            printf 'install'
+        fi
+    elif [ "$installed_version" = "$VERSION" ]; then
+        if [ "$FORCE" -eq 1 ]; then printf 'reinstall'; else printf 'noop'; fi
+    elif [ "$FORCE" -eq 1 ]; then
+        printf 'replace'
+    else
+        printf 'blocked_version'
+    fi
 }
 
 detect_platform() {
@@ -419,12 +472,28 @@ fi
 
 installed_version=$(gh_version "$GH_BIN" || true)
 logged_as=$(gh_login "$GH_BIN" || true)
+target_exists=0
+[ -f "$GH_BIN" ] && target_exists=1
+other_gh=$(gh_on_path || true)
+other_version=""
+other_gh_is_other=0
+if [ -n "$other_gh" ] && ! same_path "$other_gh" "$GH_BIN"; then
+    other_version=$(gh_version "$other_gh" || true)
+    other_gh_is_other=1
+fi
+action=none
+path_changed=0
 
 if [ "$CHECK" -eq 1 ]; then
     if [ -n "$installed_version" ]; then
         ok "gh $installed_version instalado en $GH_BIN"
+    elif [ "$target_exists" -eq 1 ]; then
+        warn "Existe $GH_BIN pero no responde"
     else
         warn "gh no esta instalado en $GH_BIN"
+    fi
+    if [ "$other_gh_is_other" -eq 1 ]; then
+        warn "Otra instalacion en el PATH: $other_gh${other_version:+ (version $other_version)}"
     fi
     if [ -n "$logged_as" ]; then
         ok "Sesion iniciada como $logged_as"
@@ -442,6 +511,20 @@ if [ "$CHECK" -eq 1 ]; then
     else
         warn 'AGENTS.md no existe'
     fi
+
+    if [ "$VERSION" = latest ]; then
+        next 'Accion: resolveria la ultima estable (requiere red) y la compararia con la instalada.'
+    else
+        case "$(resolve_action)" in
+            noop) ok "Accion: sin cambios en el binario (gh $installed_version)" ;;
+            install) next "Accion: instalaria gh $VERSION" ;;
+            repair) warn "Accion: repararia $GH_BIN" ;;
+            blocked_other) warn 'Accion: bloqueado; ya hay otra instalacion (usa --force o --install-dir)' ;;
+            blocked_version) warn "Accion: requiere --force para reemplazar gh $installed_version por $VERSION" ;;
+            replace) warn "Accion: reemplazaria gh $installed_version por $VERSION (--force)" ;;
+            reinstall) next "Accion: reinstalaria gh $installed_version (--force)" ;;
+        esac
+    fi
     exit 0
 fi
 
@@ -455,19 +538,49 @@ if [ "$UPDATE_ONLY" -eq 0 ]; then
         info "Ultima version estable: $VERSION"
     fi
 
-    needs_install=1
-    if [ -n "$installed_version" ] && [ "$FORCE" -eq 0 ] && [ "$installed_version" = "$VERSION" ]; then
-        needs_install=0
-    fi
+    action=$(resolve_action)
 
-    if [ "$needs_install" -eq 1 ]; then
-        install_gh
-        installed_version=$(gh_version "$GH_BIN" || true)
-        [ -n "$installed_version" ] || die 'gh no responde tras la instalacion'
-        ok "gh $installed_version operativo"
-    else
-        ok "gh $installed_version ya instalado (usa --force para reinstalar)"
-    fi
+    case "$action" in
+        blocked_other)
+            warn "Ya hay gh instalado en $other_gh${other_version:+ (version $other_version)}."
+            warn "No se instalo una segunda copia en $GH_BIN."
+            next 'Para instalar en paralelo: repite el comando con --force'
+            next 'Para elegir otra carpeta: --install-dir RUTA'
+            next 'Para usar la existente: gh --version'
+            exit 2
+            ;;
+        blocked_version)
+            warn "gh $installed_version instalado en $GH_BIN"
+            if semver_gt "$installed_version" "$VERSION"; then
+                warn "La version solicitada ($VERSION) es anterior: seria un downgrade. No se modifico nada."
+            else
+                warn "La version solicitada ($VERSION) es distinta de la instalada. No se modifico nada."
+            fi
+            next "Para reemplazar por $VERSION: repite el comando con --force"
+            next 'Para conservar la actual: no hagas nada'
+            next 'Para instalar en otra carpeta: --install-dir RUTA'
+            exit 2
+            ;;
+        repair) warn "Existe $GH_BIN pero no responde; se repara." ;;
+        replace)
+            if semver_gt "$installed_version" "$VERSION"; then
+                warn "Reemplazando gh $installed_version por $VERSION (downgrade solicitado con --force)."
+            else
+                info "Actualizando gh $installed_version -> $VERSION (--force)."
+            fi
+            ;;
+        reinstall) info "Reinstalando gh $installed_version (--force)." ;;
+        noop) ok "gh $installed_version ya instalado; sin cambios en el binario." ;;
+    esac
+
+    case "$action" in
+        install|repair|replace|reinstall)
+            install_gh
+            installed_version=$(gh_version "$GH_BIN" || true)
+            [ -n "$installed_version" ] || die 'gh no responde tras la instalacion'
+            ok "gh $installed_version operativo"
+            ;;
+    esac
 fi
 
 if [ -z "$installed_version" ]; then
@@ -484,9 +597,15 @@ if [ "$NO_PATH" -eq 0 ]; then
             update_path_file "$rc"
             PATH="$INSTALL_DIR:$PATH"
             export PATH
+            path_changed=1
             ok "PATH actualizado en $rc (abre una shell nueva para que persista)"
             ;;
     esac
+fi
+
+resolved_after=$(gh_on_path || true)
+if [ -n "$resolved_after" ] && ! same_path "$resolved_after" "$GH_BIN"; then
+    warn "El comando 'gh' del PATH apunta a $resolved_after, no a $GH_BIN. Ajusta el PATH o invoca la ruta absoluta."
 fi
 
 if [ "$LOGIN" -eq 1 ] && [ -z "$logged_as" ]; then
@@ -507,4 +626,20 @@ else
     warn 'GitHub todavia sin sesion'
     next 'Ejecuta: gh auth login --hostname github.com --git-protocol https --web'
     next 'El codigo de 8 caracteres lo genera gh en este equipo y aparece en esa terminal (no es el 2FA). Pegalo en https://github.com/login/device.'
+fi
+
+parts=""
+case "$action" in
+    install|repair|replace|reinstall) parts="binario gh $installed_version" ;;
+esac
+if [ "$path_changed" -eq 1 ]; then
+    parts="${parts:+$parts; }PATH"
+fi
+if [ "$result" != "sin cambios" ]; then
+    parts="${parts:+$parts; }AGENTS.md ($result)"
+fi
+if [ -z "$parts" ]; then
+    ok 'Resumen: sin cambios.'
+else
+    ok "Resumen: $parts"
 fi

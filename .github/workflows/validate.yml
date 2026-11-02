@@ -66,6 +66,52 @@ jobs:
           if ($raw -notmatch 'configuración') { throw 'Missing configuracion accent in AGENTS.md' }
           Write-Host 'Accents OK'
 
+      - name: Reinstall protection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dst = Join-Path $env:RUNNER_TEMP 'gh51'
+          $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
+          $noop = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "No-op run failed with code $LASTEXITCODE" }
+          if ($noop -notmatch 'sin cambios en el binario') { throw 'Same-version run is not a no-op' }
+          $before = (Get-FileHash (Join-Path $dst 'gh.exe')).Hash
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate -Version 2.101.0
+          if ($LASTEXITCODE -ne 2) { throw "Expected exit 2, got $LASTEXITCODE" }
+          if ((Get-FileHash (Join-Path $dst 'gh.exe')).Hash -ne $before) { throw 'Binary changed without -Force' }
+          $check = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check -Version 2.101.0 -InstallDir $dst -DshHome $dsh 2>&1 | Out-String
+          if ($check -notmatch 'requiere -Force') { throw 'Check does not predict the -Force requirement' }
+          Write-Host 'Reinstall protection OK'
+
+      - name: Other installation on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $other = Join-Path $env:RUNNER_TEMP 'othergh'
+          New-Item -ItemType Directory -Path $other -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $other 'gh.cmd') -Value '@echo gh version 9.9.9 (2026-01-01)' -Encoding ascii
+          $home2 = Join-Path $env:RUNNER_TEMP 'fakehome'
+          New-Item -ItemType Directory -Path $home2 -Force | Out-Null
+          $env:USERPROFILE = $home2
+          $env:PATH = "$other;$env:PATH"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -DshHome (Join-Path $home2 '.dsh') -NoPathUpdate
+          if ($LASTEXITCODE -ne 2) { throw "Expected exit 2 for other installation, got $LASTEXITCODE" }
+          if (Test-Path (Join-Path $home2 '.local\bin\gh.exe')) { throw 'Installed a duplicate without -Force' }
+          Write-Host 'Other installation blocked OK'
+
+      - name: Repair broken binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bad = Join-Path $env:RUNNER_TEMP 'ghbad'
+          New-Item -ItemType Directory -Path $bad -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bad 'gh.exe') -Value 'broken' -Encoding ascii
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $bad -DshHome (Join-Path $env:RUNNER_TEMP 'dshbad') -NoPathUpdate
+          if ($LASTEXITCODE -ne 0) { throw "Repair failed with code $LASTEXITCODE" }
+          $version = & (Join-Path $bad 'gh.exe') --version | Select-Object -First 1
+          if ($version -notmatch '2\.102') { throw "Repair did not restore gh: $version" }
+          Write-Host 'Repair OK'
+
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -89,7 +135,8 @@ jobs:
           mkdir -p "$HOME"
           bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
           test -x "$RUNNER_TEMP/bin/gh"
-          "$RUNNER_TEMP/bin/gh" --version
+          assert_gh() { v=$("$RUNNER_TEMP/bin/gh" --version | head -n 1); case "$v" in *2.102.0*) ;; *) echo "$v"; exit 1 ;; esac; }
+          assert_gh
           grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
           grep -q 'configuración' "$HOME/.dsh/AGENTS.md"
           second=$(bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update)
@@ -97,6 +144,35 @@ jobs:
             *"ya instalado"*) ;;
             *) echo "$second"; echo 'La segunda ejecucion no fue idempotente'; exit 1 ;;
           esac
+
+          set +e
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/block.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
+          grep -q 'downgrade' "$RUNNER_TEMP/block.log"
+          assert_gh
+          check_out=$(bash scripts/install-gh.sh --check --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --version 2.101.0)
+          case "$check_out" in
+            *"requiere --force"*) ;;
+            *) echo "$check_out"; echo 'Check no predice --force'; exit 1 ;;
+          esac
+
+          mkdir -p "$RUNNER_TEMP/other"
+          printf '#!/bin/sh\necho "gh version 9.9.9"\n' > "$RUNNER_TEMP/other/gh"
+          chmod +x "$RUNNER_TEMP/other/gh"
+          set +e
+          HOME="$RUNNER_TEMP/home2" PATH="$RUNNER_TEMP/other:$PATH" bash scripts/install-gh.sh --no-path-update > "$RUNNER_TEMP/other.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/other.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
+          test ! -e "$RUNNER_TEMP/home2/.local/bin/gh"
+
+          printf 'broken' > "$RUNNER_TEMP/bin/gh"
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update > "$RUNNER_TEMP/repair.log" 2>&1
+          grep -q 'repara' "$RUNNER_TEMP/repair.log"
+          assert_gh
+
           bash scripts/install-gh.sh --check --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh"
           bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --uninstall
           test ! -x "$RUNNER_TEMP/bin/gh"
@@ -116,8 +192,15 @@ jobs:
           mkdir -p "$HOME"
           bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
           test -x "$RUNNER_TEMP/bin/gh"
-          "$RUNNER_TEMP/bin/gh" --version
+          assert_gh() { v=$("$RUNNER_TEMP/bin/gh" --version | head -n 1); case "$v" in *2.102.0*) ;; *) echo "$v"; exit 1 ;; esac; }
+          assert_gh
           grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
+          set +e
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/block.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
+          assert_gh
 
   block-consistency:
     runs-on: ubuntu-latest
