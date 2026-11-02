@@ -36,18 +36,24 @@ jobs:
           $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-pwsh'
           ./scripts/install-gh.ps1 -Check
 
-      - name: Install and accents (Windows PowerShell 5.1)
+      - name: Install (Windows PowerShell 5.1)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $dst = Join-Path $env:RUNNER_TEMP 'gh51'
           $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate
-          if ($LASTEXITCODE -ne 0) { throw "La instalacion con 5.1 fallo con codigo $LASTEXITCODE" }
-          $raw = [System.IO.File]::ReadAllText((Join-Path $dsh 'AGENTS.md'))
-          if ($raw -notmatch 'Sesión') { throw 'Acentos corruptos en AGENTS.md con PowerShell 5.1' }
-          if ($raw -notmatch 'configuración') { throw 'Acentos corruptos (configuracion) en AGENTS.md con PowerShell 5.1' }
-          Write-Host 'Instalacion 5.1 OK'
+          if ($LASTEXITCODE -ne 0) { throw "5.1 install failed with code $LASTEXITCODE" }
+          Write-Host '5.1 install OK'
+
+      - name: Accents written by 5.1 (PowerShell 7)
+        shell: pwsh
+        run: |
+          $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
+          $raw = Get-Content -Raw (Join-Path $dsh 'AGENTS.md')
+          if ($raw -notmatch 'Sesión') { throw 'Missing Sesion accent in AGENTS.md' }
+          if ($raw -notmatch 'configuración') { throw 'Missing configuracion accent in AGENTS.md' }
+          Write-Host 'Accents OK'
 
   linux:
     runs-on: ubuntu-latest

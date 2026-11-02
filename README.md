@@ -88,7 +88,7 @@ curl -fsSL https://github.com/muelabyte/control-github/releases/download/v1.1.0/
 |---|---|
 | Windows 10/11 | **Windows PowerShell 5.1** o PowerShell 7 (`pwsh`). Sin administrador |
 | Linux | glibc (amd64, arm64, 386, armv6, ppc64le, s390x). `bash` 3.2+, `curl` o `wget`, `tar`. Sin `sudo` |
-| macOS 12+ | Intel o Apple Silicon. `curl` y `tar` del sistema. Sin `sudo` |
+| macOS 12+ | Intel o Apple Silicon. `curl`, `tar` y `unzip` del sistema. Sin `sudo` |
 | Red | Acceso a `github.com`, `api.github.com` y `objects.githubusercontent.com` |
 
 En Linux el script instala en `~/.local/bin` y añade la carpeta al rc de tu shell (`.bashrc`, `.zshrc` o `.profile`). En macOS usa `~/.local/bin` y `.zshrc`/`.bash_profile`.
