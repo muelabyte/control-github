@@ -61,6 +61,10 @@ param(
     [string]$DshHome = $(
         if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
     ),
+    [switch]$Global,
+    [switch]$Project,
+    [string]$ProjectDir,
+    [switch]$NonInteractive,
     [switch]$Login,
     [switch]$UpdateInstructionsOnly,
     [switch]$NoPathUpdate,
@@ -98,7 +102,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 $script:BeginMarker = '<!-- dsh-github-cli:begin'
 $script:EndMarker = '<!-- dsh-github-cli:end -->'
-$script:GhostPath = Join-Path $InstallDir 'gh.exe'
 
 # Compatible con Windows PowerShell 5.1 y PowerShell 7. El archivo se guarda en
 # UTF-8 sin BOM para que 'irm | iex' lo parsee; 5.1 usa el bloque de reejecucion
@@ -108,6 +111,64 @@ function Write-Step([string]$Message) { Write-Host "[INFO] $Message" }
 function Write-Ok([string]$Message) { Write-Host "[OK]   $Message" }
 function Write-Warn([string]$Message) { Write-Host "[WARN] $Message" }
 function Write-Next([string]$Message) { Write-Host "[NEXT] $Message" }
+
+function Get-ProjectRoot {
+    if ($ProjectDir) {
+        if (-not (Test-Path -LiteralPath $ProjectDir)) {
+            New-Item -ItemType Directory -Path $ProjectDir -Force | Out-Null
+        }
+        return (Resolve-Path -LiteralPath $ProjectDir).Path
+    }
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $root = & git rev-parse --show-toplevel 2>$null
+        if ($LASTEXITCODE -eq 0 -and $root) {
+            return ($root | Select-Object -First 1).Trim()
+        }
+    }
+    return (Get-Location).Path
+}
+
+function Resolve-Scope {
+    if ($Global -and $Project) { throw 'Usa solo uno: -Global o -Project' }
+    if ($Global) { return 'Global' }
+    if ($Project) { return 'Project' }
+    if ($NonInteractive -or [Console]::IsInputRedirected) {
+        Write-Warn 'Sin terminal interactiva: se usa el alcance Global (usa -Project para el proyecto).'
+        return 'Global'
+    }
+    $root = Get-ProjectRoot
+    Write-Host ''
+    Write-Host '¿Dónde quieres instalar GitHub CLI?'
+    Write-Host "  [G] Global (este usuario): $InstallDir + PATH + $(Join-Path $DshHome 'AGENTS.md')"
+    Write-Host "  [P] Solo este proyecto:  $(Join-Path $root '.dsh\bin') + AGENTS.local.md (sin tocar el PATH)"
+    Write-Host '  [C] Cancelar'
+    $answer = Read-Host 'Elige [G/P/C] (G)'
+    switch ($answer.Trim().ToUpperInvariant()) {
+        'P' { return 'Project' }
+        'C' { return 'Cancel' }
+        default { return 'Global' }
+    }
+}
+
+function Write-ProjectEnv([string]$Root, [string]$BinDir) {
+    $dshDir = Join-Path $Root '.dsh'
+    if (-not (Test-Path -LiteralPath $dshDir)) {
+        New-Item -ItemType Directory -Path $dshDir -Force | Out-Null
+    }
+    $envPs1 = Join-Path $dshDir 'env.ps1'
+    $content = "# Generado por install-gh.ps1 (modo proyecto)`r`n`$env:PATH = `"$BinDir;`" + `$env:PATH`r`n"
+    $changed = $false
+    if (-not (Test-Path -LiteralPath $envPs1) -or [System.IO.File]::ReadAllText($envPs1) -ne $content) {
+        [System.IO.File]::WriteAllText($envPs1, $content, (New-Object System.Text.UTF8Encoding($false)))
+        $changed = $true
+    }
+    $gitignore = Join-Path $dshDir '.gitignore'
+    if (-not (Test-Path -LiteralPath $gitignore)) {
+        [System.IO.File]::WriteAllText($gitignore, "bin/`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    if ($changed) { Write-Ok "Entorno local: $envPs1" }
+    return $changed
+}
 
 function Test-CommandPath([string]$Directory) {
     $parts = $env:PATH -split ';'
@@ -178,7 +239,7 @@ function Compare-Semver([string]$Left, [string]$Right) {
 function Get-InstallAction([string]$Installed, [string]$Target, [string]$OtherGh, [bool]$TargetExists) {
     if (-not $Installed) {
         if ($TargetExists) { return 'Repair' }
-        if ($OtherGh -and -not $explicitInstallDir) { return 'BlockedOther' }
+        if ($scope -eq 'Global' -and $OtherGh -and -not $explicitInstallDir) { return 'BlockedOther' }
         return 'Install'
     }
     if ($Installed -eq $Target) {
@@ -265,9 +326,22 @@ function Ensure-UserPath([string]$Directory) {
     return $true
 }
 
-function New-InstructionsBlock([string]$GhExe) {
+function New-InstructionsBlock([string]$GhExe, [string]$Scope) {
     $installedVersion = Get-GhVersion $GhExe
     if (-not $installedVersion) { $installedVersion = 'desconocida' }
+
+    if ($Scope -eq 'Project') {
+        $pathLine = @'
+- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (instalación local
+  del proyecto; el PATH no se modificó: usa esta ruta o ejecuta `.dsh/env.ps1`).
+'@
+    }
+    else {
+        $pathLine = @'
+- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (esa carpeta está
+  en el PATH del usuario; si no se resuelve, invoca la ruta absoluta).
+'@
+    }
 
     $ghLogin = Get-GhLogin $GhExe
     if ($ghLogin) {
@@ -296,8 +370,7 @@ Toda pregunta sobre GitHub (repositorios, issues, PRs, releases, Actions, gists 
 código) debe resolverse con datos reales usando **GitHub CLI**, sin configuración
 por sesión.
 
-- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (esa carpeta está
-  en el PATH del usuario; si no se resuelve, invoca la ruta absoluta).
+__PATH_LINE__
 __AUTH_BLOCK__
 - No uses otro método (scraping, API sin autenticar) si `gh` está disponible.
 
@@ -333,13 +406,32 @@ __AUTH_BLOCK__
 <!-- dsh-github-cli:end -->
 '@
 
+    $block = $block.Replace('__PATH_LINE__', $pathLine)
     $block = $block.Replace('__VERSION__', $installedVersion)
     $block = $block.Replace('__GH_PATH__', $GhExe)
     $block = $block.Replace('__AUTH_BLOCK__', $authBlock)
     return $block
 }
 
-function Update-AgentsFile([string]$Path, [string]$Block) {
+function Get-AgentsHeader([string]$Scope) {
+    if ($Scope -eq 'Project') {
+        return @'
+# Instrucciones locales del proyecto
+
+> Este archivo solo aplica a este proyecto. DSH lo carga además del AGENTS.md global.
+
+'@
+    }
+    return @'
+# Contexto global del usuario
+
+> Instrucciones globales: DSH carga este archivo en la primera petición de
+> **todas** las sesiones, sin importar la carpeta de trabajo.
+
+'@
+}
+
+function Update-AgentsFile([string]$Path, [string]$Block, [string]$Scope) {
     $directory = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -347,14 +439,8 @@ function Update-AgentsFile([string]$Path, [string]$Block) {
     $encoding = New-Object System.Text.UTF8Encoding($false)
 
     if (-not (Test-Path -LiteralPath $Path)) {
-        $header = @'
-# Contexto global del usuario
-
-> Instrucciones globales: DSH carga este archivo en la primera petición de
-> **todas** las sesiones, sin importar la carpeta de trabajo.
-
-'@
-        [System.IO.File]::WriteAllText($Path, $header + [Environment]::NewLine + $Block + [Environment]::NewLine, $encoding)
+        $header = Get-AgentsHeader $Scope
+        [System.IO.File]::WriteAllText($Path, $header + $Block + [Environment]::NewLine, $encoding)
         return 'creado'
     }
 
@@ -394,8 +480,28 @@ function Update-AgentsFile([string]$Path, [string]$Block) {
 # ---------------------------------------------------------------------------
 
 try {
+    $scope = Resolve-Scope
+    if ($scope -eq 'Cancel') {
+        Write-Ok 'Cancelado, sin cambios.'
+        $global:LASTEXITCODE = 0
+        return
+    }
+    $isProject = $scope -eq 'Project'
+    if ($isProject) {
+        if ($explicitInstallDir) { throw 'En modo proyecto no uses -InstallDir; usa -ProjectDir' }
+        $projectRoot = Get-ProjectRoot
+        $InstallDir = Join-Path $projectRoot '.dsh\bin'
+        $agentsPath = Join-Path $projectRoot 'AGENTS.local.md'
+        $script:GhostPath = Join-Path $InstallDir 'gh.exe'
+        Write-Step "Alcance: proyecto ($projectRoot)"
+    }
+    else {
+        $agentsPath = Join-Path $DshHome 'AGENTS.md'
+        $script:GhostPath = Join-Path $InstallDir 'gh.exe'
+        Write-Step 'Alcance: global (usuario)'
+    }
     Write-Step "Destino: $script:GhostPath"
-    Write-Step "AGENTS.md: $(Join-Path $DshHome 'AGENTS.md')"
+    Write-Step "Instrucciones: $agentsPath"
 
     if ($Uninstall) {
         if (Test-Path -LiteralPath $script:GhostPath) {
@@ -405,15 +511,28 @@ try {
         else {
             Write-Warn "No existe $script:GhostPath"
         }
-        $agentsPath = Join-Path $DshHome 'AGENTS.md'
+        if ($isProject) {
+            $envPs1 = Join-Path (Split-Path -Parent $InstallDir) 'env.ps1'
+            if (Test-Path -LiteralPath $envPs1) {
+                Remove-Item -LiteralPath $envPs1 -Force
+                Write-Ok "Eliminado $envPs1"
+            }
+        }
         if (Test-Path -LiteralPath $agentsPath) {
             $raw = [System.IO.File]::ReadAllText($agentsPath)
             $begin = $raw.IndexOf($script:BeginMarker)
             $end = $raw.IndexOf($script:EndMarker)
             if ($begin -ge 0 -and $end -gt $begin) {
-                $new = $raw.Remove($begin, $end + $script:EndMarker.Length - $begin).TrimEnd() + [Environment]::NewLine
-                [System.IO.File]::WriteAllText($agentsPath, $new, (New-Object System.Text.UTF8Encoding($false)))
-                Write-Ok "Bloque de GitHub eliminado de $agentsPath"
+                $new = $raw.Remove($begin, $end + $script:EndMarker.Length - $begin).TrimEnd()
+                $header = (Get-AgentsHeader $scope).TrimEnd()
+                if ($new.Trim().Length -eq 0 -or $new.Trim() -eq $header) {
+                    Remove-Item -LiteralPath $agentsPath -Force
+                    Write-Ok "Eliminado $agentsPath"
+                }
+                else {
+                    [System.IO.File]::WriteAllText($agentsPath, $new + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+                    Write-Ok "Bloque de GitHub eliminado de $agentsPath"
+                }
             }
         }
         Write-Next 'La sesion de GitHub sigue guardada. Para cerrarla: gh auth logout --hostname github.com'
@@ -433,23 +552,29 @@ try {
     $action = 'None'
 
     if ($Check) {
+        Write-Ok "Alcance: $scope$(if ($isProject) { " ($projectRoot)" } else { '' })"
         if ($installedVersion) { Write-Ok "gh $installedVersion instalado en $script:GhostPath" }
         elseif ($targetExists) { Write-Warn "Existe $script:GhostPath pero no responde" }
         else { Write-Warn "gh no esta instalado en $script:GhostPath" }
         if ($otherGh -and -not (Test-SamePath $otherGh $script:GhostPath)) {
             $suffix = if ($otherGhVersion) { " (version $otherGhVersion)" } else { '' }
-            Write-Warn "Otra instalacion en el PATH: $otherGh$suffix"
+            if ($isProject) { Write-Warn "Otra instalacion en el PATH: $otherGh$suffix (la local tiene prioridad)" }
+            else { Write-Warn "Otra instalacion en el PATH: $otherGh$suffix" }
         }
         if ($ghLogin) { Write-Ok "Sesion iniciada como $ghLogin" }
         else { Write-Warn 'Sin sesion de GitHub (falta gh auth login)' }
-        Write-Ok ("PATH: " + $(if (Test-CommandPath $InstallDir) { 'correcto' } else { 'falta ' + $InstallDir }))
-        $agentsPath = Join-Path $DshHome 'AGENTS.md'
+        if ($isProject) {
+            Write-Ok "PATH: sin cambios; entorno local en $(Join-Path $projectRoot '.dsh\env.ps1')"
+        }
+        else {
+            Write-Ok ("PATH: " + $(if (Test-CommandPath $InstallDir) { 'correcto' } else { 'falta ' + $InstallDir }))
+        }
         if (Test-Path -LiteralPath $agentsPath) {
             $raw = [System.IO.File]::ReadAllText($agentsPath)
-            if ($raw.IndexOf($script:BeginMarker) -ge 0) { Write-Ok 'AGENTS.md con bloque gestionado' }
-            else { Write-Warn 'AGENTS.md existe sin bloque gestionado (se migrara al ejecutar la instalacion)' }
+            if ($raw.IndexOf($script:BeginMarker) -ge 0) { Write-Ok "$agentsPath con bloque gestionado" }
+            else { Write-Warn "$agentsPath existe sin bloque gestionado (se migrara al ejecutar la instalacion)" }
         }
-        else { Write-Warn 'AGENTS.md no existe' }
+        else { Write-Warn "$agentsPath no existe" }
 
         if ($Version -eq 'latest') {
             Write-Next 'Accion: resolveria la ultima estable (requiere red) y la compararia con la instalada.'
@@ -500,7 +625,8 @@ try {
                 }
                 Write-Next "Para reemplazar por ${Version}: repite el comando con -Force"
                 Write-Next 'Para conservar la actual: no hagas nada'
-                Write-Next 'Para instalar en otra carpeta: -InstallDir RUTA'
+                if ($isProject) { Write-Next 'Para otra raiz de proyecto: -ProjectDir RUTA' }
+                else { Write-Next 'Para instalar en otra carpeta: -InstallDir RUTA' }
                 if ($PSCommandPath) { exit 2 }
                 $global:LASTEXITCODE = 2
                 return
@@ -552,11 +678,24 @@ try {
     }
 
     $pathChanged = $false
-    if (-not $NoPathUpdate) { $pathChanged = Ensure-UserPath $InstallDir }
+    $envChanged = $false
+    if ($isProject) {
+        if (-not $NoPathUpdate) {
+            $envChanged = Write-ProjectEnv $projectRoot $InstallDir
+        }
+    }
+    elseif (-not $NoPathUpdate) {
+        $pathChanged = Ensure-UserPath $InstallDir
+    }
 
     $resolvedGh = Get-GhOnPath
     if ($resolvedGh -and -not (Test-SamePath $resolvedGh $script:GhostPath)) {
-        Write-Warn "El comando 'gh' del PATH apunta a $resolvedGh, no a $script:GhostPath. Ajusta el PATH o invoca la ruta absoluta."
+        if ($isProject) {
+            Write-Warn "El comando 'gh' del PATH apunta a $resolvedGh; en este proyecto usa $script:GhostPath o .dsh\env.ps1."
+        }
+        else {
+            Write-Warn "El comando 'gh' del PATH apunta a $resolvedGh, no a $script:GhostPath. Ajusta el PATH o invoca la ruta absoluta."
+        }
     }
 
     if ($Login -and -not $ghLogin) {
@@ -573,10 +712,9 @@ try {
         $ghLogin = Get-GhLogin $script:GhostPath
     }
 
-    $agentsPath = Join-Path $DshHome 'AGENTS.md'
-    $block = New-InstructionsBlock $script:GhostPath
-    $result = Update-AgentsFile $agentsPath $block
-    Write-Ok "AGENTS.md: $result"
+    $block = New-InstructionsBlock $script:GhostPath $scope
+    $result = Update-AgentsFile $agentsPath $block $scope
+    Write-Ok "Instrucciones: $result"
 
     if ($ghLogin) {
         Write-Ok "Sesion de GitHub activa como $ghLogin"
@@ -587,7 +725,7 @@ try {
         Write-Next 'Ejecuta: gh auth login --hostname github.com --git-protocol https --web'
         Write-Next 'El codigo de 8 caracteres lo genera gh en este equipo y aparece en esa terminal (no es el 2FA). Pegalo en https://github.com/login/device.'
         Write-Next 'Si no ves el codigo, Ctrl+C y repite el comando: se genera uno nuevo (caduca en ~15 min).'
-        Write-Next 'Despues vuelve a ejecutar este script (sin -Login) para fijar el login en AGENTS.md'
+        Write-Next 'Despues vuelve a ejecutar este script (sin -Login) para fijar el login en el archivo de instrucciones'
     }
 
     # 'gh auth status' sin sesion deja LASTEXITCODE=1 aunque sea un caso
@@ -597,7 +735,8 @@ try {
         $summary += "binario gh $installedVersion"
     }
     if ($pathChanged) { $summary += 'PATH' }
-    if ($result -ne 'sin cambios') { $summary += "AGENTS.md ($result)" }
+    if ($envChanged) { $summary += 'entorno local (.dsh/env.ps1)' }
+    if ($result -ne 'sin cambios') { $summary += "instrucciones ($result)" }
     if ($summary.Count -eq 0) { Write-Ok 'Resumen: sin cambios.' }
     else { Write-Ok ("Resumen: " + ($summary -join '; ')) }
 

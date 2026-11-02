@@ -455,6 +455,7 @@ Comprobar scopes: `gh auth status` debe listar `repo`, `read:org`, `gist`, `work
 - `scripts/install-gh.ps1` validado en `-Check` y en instalación real con PowerShell 7 y con Windows PowerShell 5.1 (UTF-8 sin BOM + reejecución) contra un `DSH_HOME` temporal, incluidos los acentos del bloque generado.
 - `scripts/install-gh.sh` cubre Linux y macOS (bash 3.2+), con paridad de opciones y el mismo bloque gestionado; validado en Linux (amd64) y en CI.
 - Ningún instalador reemplaza una copia existente sin `-Force`: con versión distinta avisa, no toca el binario y sale con código 2; si hay otra copia en el PATH, no la duplica.
+- El instalador pregunta el alcance (global del usuario o solo proyecto). En modo proyecto usa `<raíz>/.dsh/bin`, `AGENTS.local.md` y un `env` local, sin tocar PATH ni el `AGENTS.md` global.
 - La carpeta `skills/` se eliminó: no hay skill.
 
 ### 13.3 Fuentes

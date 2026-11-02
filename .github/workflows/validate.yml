@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         run: |
           $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-pwsh'
-          ./scripts/install-gh.ps1 -Check
+          ./scripts/install-gh.ps1 -Check -Global
 
       - name: Parse like irm (Windows PowerShell 5.1)
         shell: powershell
@@ -44,7 +44,7 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path .\scripts\install-gh.ps1))
           $text = [System.Text.Encoding]::UTF8.GetString($bytes)
           $sb = [scriptblock]::Create($text)
-          & $sb -Check
+          & $sb -Check -Global
           Write-Host 'Parse irm OK'
 
       - name: Install (Windows PowerShell 5.1)
@@ -53,7 +53,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dst = Join-Path $env:RUNNER_TEMP 'gh51'
           $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -Global -DshHome $dsh -NoPathUpdate
           if ($LASTEXITCODE -ne 0) { throw "5.1 install failed with code $LASTEXITCODE" }
           Write-Host '5.1 install OK'
 
@@ -72,14 +72,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dst = Join-Path $env:RUNNER_TEMP 'gh51'
           $dsh = Join-Path $env:RUNNER_TEMP 'dsh51'
-          $noop = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate 2>&1 | Out-String
+          $noop = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -Global -DshHome $dsh -NoPathUpdate 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { throw "No-op run failed with code $LASTEXITCODE" }
           if ($noop -notmatch 'sin cambios en el binario') { throw 'Same-version run is not a no-op' }
           $before = (Get-FileHash (Join-Path $dst 'gh.exe')).Hash
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -DshHome $dsh -NoPathUpdate -Version 2.101.0
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $dst -Global -DshHome $dsh -NoPathUpdate -Version 2.101.0
           if ($LASTEXITCODE -ne 2) { throw "Expected exit 2, got $LASTEXITCODE" }
           if ((Get-FileHash (Join-Path $dst 'gh.exe')).Hash -ne $before) { throw 'Binary changed without -Force' }
-          $check = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check -Version 2.101.0 -InstallDir $dst -DshHome $dsh 2>&1 | Out-String
+          $check = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check -Global -Version 2.101.0 -InstallDir $dst -DshHome $dsh 2>&1 | Out-String
           if ($check -notmatch 'requiere -Force') { throw 'Check does not predict the -Force requirement' }
           Write-Host 'Reinstall protection OK'
           exit 0
@@ -95,7 +95,7 @@ jobs:
           New-Item -ItemType Directory -Path $home2 -Force | Out-Null
           $env:USERPROFILE = $home2
           $env:PATH = "$other;$env:PATH"
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -DshHome (Join-Path $home2 '.dsh') -NoPathUpdate
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Global -DshHome (Join-Path $home2 '.dsh') -NoPathUpdate
           if ($LASTEXITCODE -ne 2) { throw "Expected exit 2 for other installation, got $LASTEXITCODE" }
           if (Test-Path (Join-Path $home2 '.local\bin\gh.exe')) { throw 'Installed a duplicate without -Force' }
           Write-Host 'Other installation blocked OK'
@@ -108,11 +108,38 @@ jobs:
           $bad = Join-Path $env:RUNNER_TEMP 'ghbad'
           New-Item -ItemType Directory -Path $bad -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $bad 'gh.exe') -Value 'broken' -Encoding ascii
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -InstallDir $bad -DshHome (Join-Path $env:RUNNER_TEMP 'dshbad') -NoPathUpdate
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Global -InstallDir $bad -DshHome (Join-Path $env:RUNNER_TEMP 'dshbad') -NoPathUpdate
           if ($LASTEXITCODE -ne 0) { throw "Repair failed with code $LASTEXITCODE" }
           $version = & (Join-Path $bad 'gh.exe') --version | Select-Object -First 1
           if ($version -notmatch '2\.102') { throw "Repair did not restore gh: $version" }
           Write-Host 'Repair OK'
+          exit 0
+
+      - name: Project scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proj = Join-Path $env:RUNNER_TEMP 'project'
+          New-Item -ItemType Directory -Path $proj -Force | Out-Null
+          $globalAgents = Join-Path $env:USERPROFILE '.dsh\AGENTS.md'
+          $before = if (Test-Path $globalAgents) { (Get-FileHash $globalAgents).Hash } else { '' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Project -ProjectDir $proj
+          if ($LASTEXITCODE -ne 0) { throw "Project install failed: $LASTEXITCODE" }
+          foreach ($rel in @('.dsh\bin\gh.exe', 'AGENTS.local.md', '.dsh\env.ps1')) {
+            if (-not (Test-Path (Join-Path $proj $rel))) { throw "Missing $rel" }
+          }
+          $block = Get-Content -Raw (Join-Path $proj 'AGENTS.local.md')
+          if ($block -notmatch 'instalación local') { throw 'Project block missing scope note' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Project -ProjectDir $proj -Version 2.101.0
+          if ($LASTEXITCODE -ne 2) { throw "Expected exit 2 in project scope, got $LASTEXITCODE" }
+          $check = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check -Project -ProjectDir $proj 2>&1 | Out-String
+          if ($check -notmatch 'Alcance: Project') { throw 'Check does not report project scope' }
+          $after = if (Test-Path $globalAgents) { (Get-FileHash $globalAgents).Hash } else { '' }
+          if ($before -ne $after) { throw 'Project mode modified global AGENTS.md' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Project -ProjectDir $proj -Uninstall
+          if (Test-Path (Join-Path $proj 'AGENTS.local.md')) { throw 'Project instructions not removed' }
+          if (Test-Path (Join-Path $proj '.dsh\bin\gh.exe')) { throw 'Project binary not removed' }
+          Write-Host 'Project scope OK'
           exit 0
 
   linux:
@@ -136,26 +163,26 @@ jobs:
           set -euo pipefail
           export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME"
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update
           test -x "$RUNNER_TEMP/bin/gh"
           assert_gh() { v=$("$RUNNER_TEMP/bin/gh" --version | head -n 1); case "$v" in *2.102.0*) ;; *) echo "$v"; exit 1 ;; esac; }
           assert_gh
           grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
           grep -q 'configuración' "$HOME/.dsh/AGENTS.md"
-          second=$(bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update)
+          second=$(bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update)
           case "$second" in
             *"ya instalado"*) ;;
             *) echo "$second"; echo 'La segunda ejecucion no fue idempotente'; exit 1 ;;
           esac
 
           set +e
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/block.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
           grep -q 'downgrade' "$RUNNER_TEMP/block.log"
           assert_gh
-          check_out=$(bash scripts/install-gh.sh --check --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --version 2.101.0)
+          check_out=$(bash scripts/install-gh.sh --check --global --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --version 2.101.0)
           case "$check_out" in
             *"requiere --force"*) ;;
             *) echo "$check_out"; echo 'Check no predice --force'; exit 1 ;;
@@ -165,20 +192,46 @@ jobs:
           printf '#!/bin/sh\necho "gh version 9.9.9"\n' > "$RUNNER_TEMP/other/gh"
           chmod +x "$RUNNER_TEMP/other/gh"
           set +e
-          HOME="$RUNNER_TEMP/home2" PATH="$RUNNER_TEMP/other:$PATH" bash scripts/install-gh.sh --no-path-update > "$RUNNER_TEMP/other.log" 2>&1
+          HOME="$RUNNER_TEMP/home2" PATH="$RUNNER_TEMP/other:$PATH" bash scripts/install-gh.sh --global --no-path-update > "$RUNNER_TEMP/other.log" 2>&1
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/other.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
           test ! -e "$RUNNER_TEMP/home2/.local/bin/gh"
 
           printf 'broken' > "$RUNNER_TEMP/bin/gh"
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update > "$RUNNER_TEMP/repair.log" 2>&1
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update > "$RUNNER_TEMP/repair.log" 2>&1
           grep -q 'repara' "$RUNNER_TEMP/repair.log"
           assert_gh
 
-          bash scripts/install-gh.sh --check --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh"
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --uninstall
+          bash scripts/install-gh.sh --check --global --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh"
+          bash scripts/install-gh.sh --global --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --uninstall
           test ! -x "$RUNNER_TEMP/bin/gh"
+
+      - name: Alcance proyecto
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/homeproj"
+          mkdir -p "$HOME" "$RUNNER_TEMP/proj"
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj"
+          test -x "$RUNNER_TEMP/proj/.dsh/bin/gh"
+          test -f "$RUNNER_TEMP/proj/AGENTS.local.md"
+          test -f "$RUNNER_TEMP/proj/.dsh/env.sh"
+          grep -q 'instalación local' "$RUNNER_TEMP/proj/AGENTS.local.md"
+          test ! -e "$HOME/.dsh/AGENTS.md"
+          test ! -e "$HOME/.bashrc"
+          set +e
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj" --version 2.101.0 > "$RUNNER_TEMP/projblock.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/projblock.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
+          check_out=$(bash scripts/install-gh.sh --check --project --project-dir "$RUNNER_TEMP/proj")
+          case "$check_out" in
+            *"Alcance: project"*) ;;
+            *) echo "$check_out"; echo 'Check no informa el alcance proyecto'; exit 1 ;;
+          esac
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj" --uninstall
+          test ! -e "$RUNNER_TEMP/proj/.dsh/bin/gh"
+          test ! -e "$RUNNER_TEMP/proj/AGENTS.local.md"
 
   macos:
     runs-on: macos-latest
@@ -193,17 +246,37 @@ jobs:
           set -euo pipefail
           export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME"
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update
           test -x "$RUNNER_TEMP/bin/gh"
           assert_gh() { v=$("$RUNNER_TEMP/bin/gh" --version | head -n 1); case "$v" in *2.102.0*) ;; *) echo "$v"; exit 1 ;; esac; }
           assert_gh
           grep -q 'Sesión' "$HOME/.dsh/AGENTS.md"
           set +e
-          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
+          bash scripts/install-gh.sh --install-dir "$RUNNER_TEMP/bin" --global --dsh-home "$HOME/.dsh" --no-path-update --version 2.101.0 > "$RUNNER_TEMP/block.log" 2>&1
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/block.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
           assert_gh
+
+      - name: Alcance proyecto
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/homeproj"
+          mkdir -p "$HOME" "$RUNNER_TEMP/proj"
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj"
+          test -x "$RUNNER_TEMP/proj/.dsh/bin/gh"
+          test -f "$RUNNER_TEMP/proj/AGENTS.local.md"
+          test -f "$RUNNER_TEMP/proj/.dsh/env.sh"
+          grep -q 'instalación local' "$RUNNER_TEMP/proj/AGENTS.local.md"
+          test ! -e "$HOME/.dsh/AGENTS.md"
+          set +e
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj" --version 2.101.0 > "$RUNNER_TEMP/projblock.log" 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then cat "$RUNNER_TEMP/projblock.log"; echo "Esperaba 2, obtuve $code"; exit 1; fi
+          bash scripts/install-gh.sh --project --project-dir "$RUNNER_TEMP/proj" --uninstall
+          test ! -e "$RUNNER_TEMP/proj/.dsh/bin/gh"
+          test ! -e "$RUNNER_TEMP/proj/AGENTS.local.md"
 
   block-consistency:
     runs-on: ubuntu-latest

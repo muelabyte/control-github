@@ -16,6 +16,10 @@ VERSION="${GH_VERSION:-2.102.0}"
 INSTALL_DIR="${GH_INSTALL_DIR:-$HOME/.local/bin}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 INSTALL_DIR_SET=0
+GLOBAL=0
+PROJECT=0
+PROJECT_DIR=""
+NONINTERACTIVE=0
 LOGIN=0
 CHECK=0
 FORCE=0
@@ -39,6 +43,10 @@ Instalador portable de GitHub CLI para Linux y macOS.
 
 Opciones:
   --check, -c                  Solo diagnostico: no descarga ni escribe.
+  --global                     Instala para el usuario (global a sus proyectos).
+  --project                    Instala solo en el proyecto actual (.dsh/bin).
+  --project-dir RUTA           Raiz del proyecto (por defecto raiz git o cwd).
+  --non-interactive            No pregunta: usa --global/--project o global.
   --login, -l                  Tras instalar, inicia el login web de GitHub.
   --force, -f                  Reinstala aunque la version coincida.
   --version X                  Version a instalar (por defecto 2.102.0); 'latest'.
@@ -58,6 +66,15 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --check|-c) CHECK=1 ;;
+        --global|-g) GLOBAL=1 ;;
+        --project|-p) PROJECT=1 ;;
+        --non-interactive|-y) NONINTERACTIVE=1 ;;
+        --project-dir)
+            shift
+            [ $# -gt 0 ] || die '--project-dir necesita un valor'
+            PROJECT_DIR="$1"
+            ;;
+        --project-dir=*) PROJECT_DIR="${1#*=}" ;;
         --login|-l) LOGIN=1 ;;
         --force|-f) FORCE=1 ;;
         --no-path-update) NO_PATH=1 ;;
@@ -87,9 +104,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-
-GH_BIN="$INSTALL_DIR/gh"
-AGENTS_FILE="$DSH_HOME/AGENTS.md"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -164,7 +178,7 @@ resolve_action() {
     if [ -z "$installed_version" ]; then
         if [ "$target_exists" -eq 1 ]; then
             printf 'repair'
-        elif [ "$other_gh_is_other" -eq 1 ] && [ "$INSTALL_DIR_SET" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+        elif [ "$IS_PROJECT" -eq 0 ] && [ "$other_gh_is_other" -eq 1 ] && [ "$INSTALL_DIR_SET" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
             printf 'blocked_other'
         else
             printf 'install'
@@ -176,6 +190,63 @@ resolve_action() {
     else
         printf 'blocked_version'
     fi
+}
+
+project_root() {
+    if [ -n "$PROJECT_DIR" ]; then
+        mkdir -p "$PROJECT_DIR"
+        (cd "$PROJECT_DIR" && pwd)
+    elif have git && git rev-parse --show-toplevel >/dev/null 2>&1; then
+        git rev-parse --show-toplevel
+    else
+        pwd
+    fi
+}
+
+ask_scope() {
+    if [ "$GLOBAL" -eq 1 ] && [ "$PROJECT" -eq 1 ]; then
+        die 'Usa solo --global o --project'
+    fi
+    if [ "$GLOBAL" -eq 1 ]; then printf 'global'; return 0; fi
+    if [ "$PROJECT" -eq 1 ]; then printf 'project'; return 0; fi
+    if [ "$NONINTERACTIVE" -eq 1 ] || { [ ! -t 0 ] && [ ! -r /dev/tty ]; }; then
+        printf '[WARN] Sin terminal interactiva: se usa el alcance global (usa --project para el proyecto).\n' >&2
+        printf 'global'
+        return 0
+    fi
+    root=$(project_root)
+    printf '\n¿Dónde quieres instalar GitHub CLI?\n' >&2
+    printf '  [G] Global (este usuario): %s + PATH + %s\n' "$INSTALL_DIR" "$DSH_HOME/AGENTS.md" >&2
+    printf '  [P] Solo este proyecto:  %s/.dsh/bin + AGENTS.local.md (sin tocar el PATH)\n' "$root" >&2
+    printf '  [C] Cancelar\n' >&2
+    printf 'Elige [G/P/C] (G): ' >&2
+    answer=""
+    if [ -t 0 ]; then
+        read -r answer || answer=""
+    elif [ -r /dev/tty ]; then
+        read -r answer < /dev/tty || answer=""
+    fi
+    case "$(printf '%s' "$answer" | tr '[:lower:]' '[:upper:]')" in
+        P|PROYECTO) printf 'project' ;;
+        C|CANCELAR) printf 'cancel' ;;
+        *) printf 'global' ;;
+    esac
+}
+
+write_project_env() {
+    root="$1"
+    bindir="$2"
+    mkdir -p "$root/.dsh"
+    envfile="$root/.dsh/env.sh"
+    content="# Generado por install-gh.sh (modo proyecto)
+export PATH=\"$bindir:\$PATH\""
+    ENV_CHANGED=0
+    if [ ! -f "$envfile" ] || [ "$(cat "$envfile")" != "$content" ]; then
+        printf '%s\n' "$content" > "$envfile"
+        ENV_CHANGED=1
+    fi
+    [ -f "$root/.dsh/.gitignore" ] || printf 'bin/\n' > "$root/.dsh/.gitignore"
+    [ "$ENV_CHANGED" -eq 1 ] && ok "Entorno local: $envfile"
 }
 
 detect_platform() {
@@ -255,6 +326,11 @@ update_path_file() {
 }
 
 agents_header() {
+    if [ "${1:-global}" = project ]; then
+        printf '# Instrucciones locales del proyecto\n\n'
+        printf '> Este archivo solo aplica a este proyecto. DSH lo carga además del AGENTS.md global.\n\n'
+        return 0
+    fi
     printf '# Contexto global del usuario\n\n'
     printf '> Instrucciones globales: DSH carga este archivo en la primera petición de\n'
     printf '> **todas** las sesiones, sin importar la carpeta de trabajo.\n\n'
@@ -264,6 +340,20 @@ agents_block() {
     gh_version_value="$1"
     gh_path_value="$2"
     login_value="$3"
+    scope_value="${4:-global}"
+
+    path_line=$(mktemp "${TMPDIR:-/tmp}/gh-pathline.XXXXXX")
+    if [ "$scope_value" = project ]; then
+        cat > "$path_line" <<'EOF'
+- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (instalación local
+  del proyecto; el PATH no se modificó: usa esta ruta o ejecuta `.dsh/env.sh`).
+EOF
+    else
+        cat > "$path_line" <<'EOF'
+- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (esa carpeta está
+  en el PATH del usuario; si no se resuelve, invoca la ruta absoluta).
+EOF
+    fi
 
     auth_block=$(mktemp "${TMPDIR:-/tmp}/gh-auth.XXXXXX")
     if [ -n "$login_value" ]; then
@@ -288,8 +378,7 @@ Toda pregunta sobre GitHub (repositorios, issues, PRs, releases, Actions, gists 
 código) debe resolverse con datos reales usando **GitHub CLI**, sin configuración
 por sesión.
 
-- `gh` __VERSION__ instalado en modo portable en `__GH_PATH__` (esa carpeta está
-  en el PATH del usuario; si no se resuelve, invoca la ruta absoluta).
+__PATH_LINE__
 __AUTH_BLOCK__
 - No uses otro método (scraping, API sin autenticar) si `gh` está disponible.
 
@@ -326,8 +415,12 @@ __AUTH_BLOCK__
 EOF
 
     with_auth=$(mktemp "${TMPDIR:-/tmp}/gh-withauth.XXXXXX")
-    awk -v authfile="$auth_block" '
-        BEGIN { while ((getline l < authfile) > 0) a = a l "\n" }
+    awk -v authfile="$auth_block" -v pathfile="$path_line" '
+        BEGIN {
+            while ((getline l < authfile) > 0) a = a l "\n"
+            while ((getline p < pathfile) > 0) pl = pl p "\n"
+        }
+        index($0, "__PATH_LINE__") == 1 { printf "%s", pl; next }
         index($0, "__AUTH_BLOCK__") == 1 { printf "%s", a; next }
         { print }
     ' "$raw_block" > "$with_auth"
@@ -336,7 +429,7 @@ EOF
     sed -e "s|__VERSION__|$gh_version_value|g" \
         -e "s|__GH_PATH__|$escaped_path|g" "$with_auth"
 
-    rm -f "$auth_block" "$raw_block" "$with_auth"
+    rm -f "$auth_block" "$raw_block" "$with_auth" "$path_line"
 }
 
 update_agents() {
@@ -346,7 +439,7 @@ update_agents() {
     [ -d "$dir" ] || mkdir -p "$dir"
 
     if [ ! -f "$file" ]; then
-        { agents_header; cat "$block"; } > "$file"
+        { agents_header "$SCOPE"; cat "$block"; } > "$file"
         printf 'creado'
         return 0
     fi
@@ -452,9 +545,35 @@ run_login() {
 }
 
 detect_platform
+
+SCOPE=$(ask_scope)
+case "$SCOPE" in
+    cancel)
+        ok 'Cancelado, sin cambios.'
+        exit 0
+        ;;
+    project)
+        if [ "$INSTALL_DIR_SET" -eq 1 ]; then
+            die 'En modo proyecto no uses --install-dir; usa --project-dir'
+        fi
+        IS_PROJECT=1
+        PROJECT_ROOT=$(project_root)
+        INSTALL_DIR="$PROJECT_ROOT/.dsh/bin"
+        AGENTS_FILE="$PROJECT_ROOT/AGENTS.local.md"
+        GH_BIN="$INSTALL_DIR/gh"
+        info "Alcance: proyecto ($PROJECT_ROOT)"
+        ;;
+    *)
+        IS_PROJECT=0
+        AGENTS_FILE="$DSH_HOME/AGENTS.md"
+        GH_BIN="$INSTALL_DIR/gh"
+        info 'Alcance: global (usuario)'
+        ;;
+esac
 info "Sistema: $OS/$ARCH"
 info "Destino: $GH_BIN"
-info "AGENTS.md: $AGENTS_FILE"
+info "Instrucciones: $AGENTS_FILE"
+ENV_CHANGED=0
 
 if [ "$UNINSTALL" -eq 1 ]; then
     if [ -f "$GH_BIN" ]; then
@@ -465,7 +584,18 @@ if [ "$UNINSTALL" -eq 1 ]; then
     fi
     remove_agents_block "$AGENTS_FILE"
     ok "Bloque de GitHub eliminado de $AGENTS_FILE"
-    remove_path_block "$(choose_rc)"
+    if [ "$IS_PROJECT" -eq 1 ]; then
+        rm -f "$PROJECT_ROOT/.dsh/env.sh"
+        header_tmp=$(mktemp "${TMPDIR:-/tmp}/gh-header.XXXXXX")
+        agents_header project > "$header_tmp"
+        if [ -f "$AGENTS_FILE" ] && [ "$(cat "$AGENTS_FILE")" = "$(cat "$header_tmp")" ]; then
+            rm -f "$AGENTS_FILE"
+            ok "Eliminado $AGENTS_FILE"
+        fi
+        rm -f "$header_tmp"
+    else
+        remove_path_block "$(choose_rc)"
+    fi
     next 'La sesion de GitHub sigue guardada. Para cerrarla: gh auth logout --hostname github.com'
     exit 0
 fi
@@ -485,6 +615,7 @@ action=none
 path_changed=0
 
 if [ "$CHECK" -eq 1 ]; then
+    ok "Alcance: $SCOPE"
     if [ -n "$installed_version" ]; then
         ok "gh $installed_version instalado en $GH_BIN"
     elif [ "$target_exists" -eq 1 ]; then
@@ -493,23 +624,31 @@ if [ "$CHECK" -eq 1 ]; then
         warn "gh no esta instalado en $GH_BIN"
     fi
     if [ "$other_gh_is_other" -eq 1 ]; then
-        warn "Otra instalacion en el PATH: $other_gh${other_version:+ (version $other_version)}"
+        if [ "$IS_PROJECT" -eq 1 ]; then
+            warn "Otra instalacion en el PATH: $other_gh${other_version:+ (version $other_version)} (la local tiene prioridad)"
+        else
+            warn "Otra instalacion en el PATH: $other_gh${other_version:+ (version $other_version)}"
+        fi
     fi
     if [ -n "$logged_as" ]; then
         ok "Sesion iniciada como $logged_as"
     else
         warn 'Sin sesion de GitHub (falta gh auth login)'
     fi
-    case ":$PATH:" in
-        *":$INSTALL_DIR:"*) ok 'PATH: correcto' ;;
-        *) warn "PATH: falta $INSTALL_DIR" ;;
-    esac
-    if [ -f "$AGENTS_FILE" ] && grep -qF "$BEGIN_MARK" "$AGENTS_FILE"; then
-        ok 'AGENTS.md con bloque gestionado'
-    elif [ -f "$AGENTS_FILE" ]; then
-        warn 'AGENTS.md existe sin bloque gestionado (se migrara al ejecutar la instalacion)'
+    if [ "$IS_PROJECT" -eq 1 ]; then
+        ok "PATH: sin cambios; entorno local en $PROJECT_ROOT/.dsh/env.sh"
     else
-        warn 'AGENTS.md no existe'
+        case ":$PATH:" in
+            *":$INSTALL_DIR:"*) ok 'PATH: correcto' ;;
+            *) warn "PATH: falta $INSTALL_DIR" ;;
+        esac
+    fi
+    if [ -f "$AGENTS_FILE" ] && grep -qF "$BEGIN_MARK" "$AGENTS_FILE"; then
+        ok "$AGENTS_FILE con bloque gestionado"
+    elif [ -f "$AGENTS_FILE" ]; then
+        warn "$AGENTS_FILE existe sin bloque gestionado (se migrara al ejecutar la instalacion)"
+    else
+        warn "$AGENTS_FILE no existe"
     fi
 
     if [ "$VERSION" = latest ]; then
@@ -558,7 +697,11 @@ if [ "$UPDATE_ONLY" -eq 0 ]; then
             fi
             next "Para reemplazar por $VERSION: repite el comando con --force"
             next 'Para conservar la actual: no hagas nada'
-            next 'Para instalar en otra carpeta: --install-dir RUTA'
+            if [ "$IS_PROJECT" -eq 1 ]; then
+                next 'Para otra raiz de proyecto: --project-dir RUTA'
+            else
+                next 'Para instalar en otra carpeta: --install-dir RUTA'
+            fi
             exit 2
             ;;
         repair) warn "Existe $GH_BIN pero no responde; se repara." ;;
@@ -588,24 +731,32 @@ if [ -z "$installed_version" ]; then
 fi
 
 if [ "$NO_PATH" -eq 0 ]; then
-    case ":$PATH:" in
-        *":$INSTALL_DIR:"*)
-            ok 'La carpeta ya esta en el PATH de esta sesion'
-            ;;
-        *)
-            rc=$(choose_rc)
-            update_path_file "$rc"
-            PATH="$INSTALL_DIR:$PATH"
-            export PATH
-            path_changed=1
-            ok "PATH actualizado en $rc (abre una shell nueva para que persista)"
-            ;;
-    esac
+    if [ "$IS_PROJECT" -eq 1 ]; then
+        write_project_env "$PROJECT_ROOT" "$INSTALL_DIR"
+    else
+        case ":$PATH:" in
+            *":$INSTALL_DIR:"*)
+                ok 'La carpeta ya esta en el PATH de esta sesion'
+                ;;
+            *)
+                rc=$(choose_rc)
+                update_path_file "$rc"
+                PATH="$INSTALL_DIR:$PATH"
+                export PATH
+                path_changed=1
+                ok "PATH actualizado en $rc (abre una shell nueva para que persista)"
+                ;;
+        esac
+    fi
 fi
 
 resolved_after=$(gh_on_path || true)
 if [ -n "$resolved_after" ] && ! same_path "$resolved_after" "$GH_BIN"; then
-    warn "El comando 'gh' del PATH apunta a $resolved_after, no a $GH_BIN. Ajusta el PATH o invoca la ruta absoluta."
+    if [ "$IS_PROJECT" -eq 1 ]; then
+        warn "El comando 'gh' del PATH apunta a $resolved_after; en este proyecto usa $GH_BIN o .dsh/env.sh."
+    else
+        warn "El comando 'gh' del PATH apunta a $resolved_after, no a $GH_BIN. Ajusta el PATH o invoca la ruta absoluta."
+    fi
 fi
 
 if [ "$LOGIN" -eq 1 ] && [ -z "$logged_as" ]; then
@@ -614,10 +765,10 @@ if [ "$LOGIN" -eq 1 ] && [ -z "$logged_as" ]; then
 fi
 
 block_file=$(mktemp "${TMPDIR:-/tmp}/gh-block.XXXXXX")
-agents_block "$installed_version" "$GH_BIN" "$logged_as" > "$block_file"
+agents_block "$installed_version" "$GH_BIN" "$logged_as" "$SCOPE" > "$block_file"
 result=$(update_agents "$AGENTS_FILE" "$block_file")
 rm -f "$block_file"
-ok "AGENTS.md: $result"
+ok "Instrucciones: $result"
 
 if [ -n "$logged_as" ]; then
     ok "Sesion de GitHub activa como $logged_as"
@@ -635,8 +786,11 @@ esac
 if [ "$path_changed" -eq 1 ]; then
     parts="${parts:+$parts; }PATH"
 fi
+if [ "$ENV_CHANGED" -eq 1 ]; then
+    parts="${parts:+$parts; }entorno local (.dsh/env.sh)"
+fi
 if [ "$result" != "sin cambios" ]; then
-    parts="${parts:+$parts; }AGENTS.md ($result)"
+    parts="${parts:+$parts; }instrucciones ($result)"
 fi
 if [ -z "$parts" ]; then
     ok 'Resumen: sin cambios.'

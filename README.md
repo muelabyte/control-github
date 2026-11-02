@@ -3,9 +3,10 @@
 Instalador de **una sola ejecución** que deja GitHub CLI (`gh`) listo para usarse desde [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) y otros agentes:
 
 - instala `gh` **portable** en Windows, Linux y macOS (sin administrador ni `sudo`),
+- **pregunta** si instalar para el usuario (global) o solo en el proyecto actual,
 - verifica el **SHA256** contra la release oficial,
-- lo deja en el **PATH** del usuario,
-- configura el bloque de GitHub en `~/.dsh/AGENTS.md` (o `$DSH_HOME/AGENTS.md`),
+- en modo global lo deja en el **PATH** del usuario; en modo proyecto usa `.dsh/bin` y un `env` local,
+- configura el bloque de GitHub en `~/.dsh/AGENTS.md` o en `AGENTS.local.md` del proyecto,
 - **guía el login** web y explica de dónde sale el código de 8 dígitos,
 - es idempotente: si la versión coincide no descarga ni reemplaza nada; si difiere, no toca el binario y te dice qué hacer.
 
@@ -18,43 +19,43 @@ Instalador de **una sola ejecución** que deja GitHub CLI (`gh`) listo para usar
 ### Windows (PowerShell 5.1 o 7)
 
 ```powershell
-irm https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1 | iex
+irm https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.ps1 | iex
 ```
 
 Con login incluido:
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Login
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.ps1'))) -Login
 ```
 
 Desde `cmd.exe` o Win+R:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.ps1 | iex"
 ```
 
 Diagnóstico, sin instalar nada:
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Check
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.ps1'))) -Check
 ```
 
 ### Linux y macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.sh | bash
 ```
 
 Con login incluido:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --login
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.sh | bash -s -- --login
 ```
 
 Diagnóstico:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.sh | bash -s -- --check
 ```
 
 ### Copia local (sin ejecutar código remoto)
@@ -72,12 +73,12 @@ bash ./scripts/install-gh.sh
 
 ```powershell
 # Windows
-irm https://github.com/muelabyte/control-github/releases/download/v1.2.0/install-gh.ps1 | iex
+irm https://github.com/muelabyte/control-github/releases/download/v1.3.0/install-gh.ps1 | iex
 ```
 
 ```bash
 # Linux / macOS
-curl -fsSL https://github.com/muelabyte/control-github/releases/download/v1.2.0/install-gh.sh | bash
+curl -fsSL https://github.com/muelabyte/control-github/releases/download/v1.3.0/install-gh.sh | bash
 ```
 
 ---
@@ -127,11 +128,55 @@ Ambos instaladores (`install-gh.ps1` e `install-gh.sh`) siguen el mismo flujo:
 2. Si falta, descargan la release oficial de `cli/cli` y verifican el SHA256.
 3. Extraen el binario y lo copian a la carpeta del usuario.
 4. Comprueban el PATH (lo añaden al perfil del usuario si falta).
-5. Leen/crean `AGENTS.md` y actualizan un **bloque gestionado** con la ruta, la versión y el login real.
+5. Leen/crean el archivo de instrucciones (global `AGENTS.md` o local `AGENTS.local.md`) y actualizan un **bloque gestionado** con la ruta, la versión y el login real.
 6. Si no hay sesión, explican cómo iniciarla; con `--login` / `-Login`, la lanzan.
 7. Verifican y muestran el siguiente comando de prueba.
 
 El bloque gestionado lleva marcadores (`dsh-github-cli:begin` / `end`) y es idempotente: se puede ejecutar varias veces sin duplicar contenido. Si ya existe una sección de GitHub escrita a mano, la **migra** al bloque en lugar de duplicarla.
+
+---
+
+## Alcance: global o solo este proyecto
+
+Al ejecutar sin `-Global`/`-Project` en una terminal, el instalador **pregunta antes de descargar nada**:
+
+```text
+¿Dónde quieres instalar GitHub CLI?
+  [G] Global (este usuario): C:\Users\...\.local\bin + PATH + ~/.dsh/AGENTS.md
+  [P] Solo este proyecto:  <raíz>\.dsh\bin + AGENTS.local.md (sin tocar el PATH)
+  [C] Cancelar
+Elige [G/P/C] (G):
+```
+
+`G` o Enter instalan para el usuario; `P` solo en el proyecto; `C` no modifica nada. Sin terminal (CI, pipes) se usa **Global** y se avisa.
+
+| | Global (usuario) | Solo proyecto |
+|---|---|---|
+| Binario | `~/.local/bin/gh` / `%USERPROFILE%\.local\bin\gh.exe` | `<raíz>/.dsh/bin/gh` / `<raíz>\.dsh\bin\gh.exe` |
+| PATH | Sí: usuario + sesión | **No**; se crea `.dsh/env.sh` o `.dsh/env.ps1` |
+| Instrucciones | `$DSH_HOME/AGENTS.md` | `<raíz>/AGENTS.local.md` |
+| Alcance | Todos los proyectos del usuario | Solo ese proyecto |
+| Autenticación | Keyring del usuario | El mismo keyring (no se aísla) |
+
+"Global" significa **del usuario**, sin administrador ni `sudo`; nunca se instala a nivel de sistema. El modo proyecto no toca archivos versionados: escribe `AGENTS.local.md` (overlay local que DSH carga además del global) y `.dsh/` con `bin/` en su `.gitignore`.
+
+Para activar el binario local en una shell:
+
+```bash
+source .dsh/env.sh          # Linux/macOS
+. .\.dsh\env.ps1            # Windows PowerShell
+```
+
+Flags para automatizar:
+
+| Windows | Linux/macOS | Efecto |
+|---|---|---|
+| `-Global` | `--global` | Fuerza alcance global |
+| `-Project` | `--project` | Fuerza alcance proyecto |
+| `-ProjectDir RUTA` | `--project-dir RUTA` | Raíz del proyecto (por defecto raíz git o cwd) |
+| `-NonInteractive` | `--non-interactive` | No pregunta; usa el flag o global |
+
+`-Check` y `--check` no preguntan: muestran el alcance que se usaría y las rutas.
 
 ---
 
@@ -158,12 +203,12 @@ Antes de tocar nada puedes simular la decisión:
 
 ```powershell
 # Windows
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.ps1'))) -Check
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.ps1'))) -Check
 ```
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scripts/install-gh.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.3.0/scripts/install-gh.sh | bash -s -- --check
 ```
 
 `-Check` muestra la versión instalada, si hay otra copia en el PATH y la acción prevista (`Sin cambios`, `Instalaría`, `Repararía`, `Requiere -Force`).
@@ -177,26 +222,32 @@ curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scr
 | Opción | Qué hace |
 |---|---|
 | `-Check` | Solo diagnóstico: no descarga, no escribe, no modifica nada |
+| `-Global` / `-Project` | Fuerza el alcance; sin flags pregunta en terminal |
+| `-ProjectDir RUTA` | Raíz del proyecto en modo proyecto |
+| `-NonInteractive` | No pregunta; usa el flag o global |
 | `-Login` | Tras instalar, lanza `gh auth login --web` y muestra el código |
 | `-Version <x.y.z>` | Instala una versión concreta; `latest` para la última estable |
 | `-Force` | Reinstala y es la única vía para cambiar de versión, incluido un downgrade |
-| `-NoPathUpdate` | No añade la carpeta al PATH del usuario |
-| `-UpdateInstructionsOnly` | No instala; solo actualiza `AGENTS.md` |
-| `-Uninstall` | Elimina `gh.exe` y el bloque gestionado de `AGENTS.md` |
+| `-NoPathUpdate` | No añade la carpeta al PATH (en proyecto, no crea `env.ps1`) |
+| `-UpdateInstructionsOnly` | No instala; solo actualiza el archivo de instrucciones |
+| `-Uninstall` | Elimina el alcance elegido; no toca el otro |
 
 ### Linux y macOS (`install-gh.sh`)
 
 | Opción | Qué hace |
 |---|---|
 | `--check` | Solo diagnóstico: no descarga, no escribe |
+| `--global` / `--project` | Fuerza el alcance; sin flags pregunta en terminal |
+| `--project-dir RUTA` | Raíz del proyecto en modo proyecto |
+| `--non-interactive` | No pregunta; usa el flag o global |
 | `--login` | Tras instalar, lanza `gh auth login --web` |
 | `--version X` | Instala una versión concreta; `latest` para la última estable |
 | `--force` | Reinstala y es la única vía para cambiar de versión, incluido un downgrade |
-| `--install-dir RUTA` | Carpeta destino (por defecto `~/.local/bin`) |
-| `--dsh-home RUTA` | Carpeta de DSH (por defecto `~/.dsh`) |
-| `--no-path-update` | No modifica el rc del shell |
-| `--update-instructions-only` | No instala; solo actualiza `AGENTS.md` |
-| `--uninstall` | Elimina `gh` y el bloque de `AGENTS.md` |
+| `--install-dir RUTA` | Carpeta destino global (por defecto `~/.local/bin`) |
+| `--dsh-home RUTA` | Carpeta de DSH global (por defecto `~/.dsh`) |
+| `--no-path-update` | No modifica el rc del shell (en proyecto, no crea `env.sh`) |
+| `--update-instructions-only` | No instala; solo actualiza el archivo de instrucciones |
+| `--uninstall` | Elimina el alcance elegido; no toca el otro |
 
 ---
 
@@ -205,18 +256,23 @@ curl -fsSL https://raw.githubusercontent.com/muelabyte/control-github/v1.2.0/scr
 ```powershell
 # Windows
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Global
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Project
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Project -ProjectDir .\mi-app
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Login
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Version latest -Force
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -UpdateInstructionsOnly
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Uninstall
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Uninstall -Project
 ```
 
 ```bash
 # Linux / macOS
 bash ./scripts/install-gh.sh --check
+bash ./scripts/install-gh.sh --global
+bash ./scripts/install-gh.sh --project
+bash ./scripts/install-gh.sh --project --project-dir ./mi-app
 bash ./scripts/install-gh.sh --login
 bash ./scripts/install-gh.sh --version latest --force
-bash ./scripts/install-gh.sh --uninstall
+bash ./scripts/install-gh.sh --uninstall --project
 ```
 
 Verificación manual:
@@ -232,14 +288,14 @@ gh repo list --limit 5 --json name,visibility
 
 ## Cómo se integra con DSH
 
-DSH carga `$DSH_HOME/AGENTS.md` en la **primera petición de todas las sesiones**, sin importar la carpeta de trabajo. El bloque que escribe el instalador indica:
+DSH carga `$DSH_HOME/AGENTS.md` en la **primera petición de todas las sesiones**, sin importar la carpeta de trabajo. Además, para cada proyecto carga `AGENTS.md`/`CLAUDE.md` y los overlays `AGENTS.local.md`/`CLAUDE.local.md` desde la raíz del proyecto. El bloque que escribe el instalador indica:
 
-- usar `gh` para cualquier consulta de GitHub,
+- usar `gh` para cualquier consulta de GitHub (en modo proyecto, la ruta local),
 - comprobar `gh --version` y `gh auth status` antes de responder,
 - comandos de referencia,
 - límites: solo lectura por defecto, sin tokens en archivos y sin `delete_repo`.
 
-El resultado: una sesión nueva puede responder «lista mis repositorios públicos» sin configuración adicional.
+En modo proyecto el bloque queda en `AGENTS.local.md`, que no se versiona y tiene prioridad en ese proyecto. El resultado: una sesión nueva puede responder «lista mis repositorios públicos» sin configuración adicional.
 
 ---
 
@@ -270,6 +326,8 @@ El resultado: una sesión nueva puede responder «lista mis repositorios públic
 | El one-liner no funciona | El repo debe ser público y el tag debe existir. Usa la copia local. |
 | Salió con código 2 y no instaló nada | Ya había otra versión u otra copia. Lee el mensaje: usa `-Force` para reemplazar o `-InstallDir RUTA` para otra carpeta. |
 | Quiero actualizar a la última | `-Version latest -Force` (o `--version latest --force`). Sin `-Force`, una instalación existente no se toca. |
+| Se quedó esperando una respuesta | Está preguntando el alcance. Responde `G`, `P` o `C`; en automatización usa `-Global`/`-Project` o `-NonInteractive`. |
+| No sé si se instaló global o en el proyecto | `-Check` muestra `Alcance:` y la ruta exacta del binario y de las instrucciones. |
 | Error de TLS/SSL en Windows 10 | Actualiza Windows o usa PowerShell 7: el script ya fuerza TLS 1.2. |
 
 ---

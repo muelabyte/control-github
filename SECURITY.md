@@ -22,6 +22,10 @@ credenciales ni detalles explotables en issues públicos.
 - **No reemplaza instalaciones existentes sin `-Force`.** Si la versión difiere,
   el instalador no toca el binario y termina con código 2. Tampoco borra
   credenciales, configuración de `gh` ni otras copias.
+- **Alcance explícito.** Pregunta si instalar para el usuario (global) o solo en
+  el proyecto. El modo proyecto no modifica el PATH del usuario, no escribe en
+  `~/.dsh/AGENTS.md` y solo crea `.dsh/bin`, `.dsh/env.*` y `AGENTS.local.md`
+  dentro del proyecto.
 - **TLS.** El instalador de Windows fuerza TLS 1.2 antes de descargar, para
   evitar la negociación TLS 1.0 de Windows PowerShell 5.1 en Windows 10.
 - **Plataformas.** Windows 10/11 (PowerShell 5.1 o 7), Linux glibc y macOS.
