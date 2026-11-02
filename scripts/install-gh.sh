@@ -23,7 +23,6 @@ UPDATE_ONLY=0
 UNINSTALL=0
 
 BEGIN_MARK='<!-- dsh-github-cli:begin'
-END_MARK='<!-- dsh-github-cli:end -->'
 PATH_BEGIN='# dsh-github-cli-path:begin'
 PATH_END='# dsh-github-cli-path:end'
 
@@ -354,7 +353,11 @@ install_gh() {
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/gh.XXXXXX") || die 'No se pudo crear un directorio temporal'
     trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 
-    asset="gh_${VERSION}_${OS}_${ARCH}.tar.gz"
+    case "$OS" in
+        linux) asset="gh_${VERSION}_linux_${ARCH}.tar.gz" ;;
+        darwin) asset="gh_${VERSION}_macOS_${ARCH}.zip" ;;
+        *) die "Sistema no soportado: $OS" ;;
+    esac
     base="https://github.com/cli/cli/releases/download/v${VERSION}"
 
     info "Descargando $asset ..."
@@ -367,7 +370,15 @@ install_gh() {
     [ "$expected" = "$actual" ] || die "SHA256 no coincide para $asset (esperado $expected, obtenido $actual)"
     ok "SHA256 verificado: $actual"
 
-    tar -xzf "$tmpdir/$asset" -C "$tmpdir"
+    case "$asset" in
+        *.zip)
+            have unzip || die 'Se requiere unzip para extraer el binario de macOS'
+            unzip -q "$tmpdir/$asset" -d "$tmpdir"
+            ;;
+        *)
+            tar -xzf "$tmpdir/$asset" -C "$tmpdir"
+            ;;
+    esac
     src=$(find "$tmpdir" -type f -path '*/bin/gh' | head -n 1)
     [ -n "$src" ] || die 'El tar.gz descargado no contiene bin/gh'
 

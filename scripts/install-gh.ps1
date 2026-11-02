@@ -108,14 +108,20 @@ function Get-GhVersion([string]$GhExe) {
 
 function Get-GhLogin([string]$GhExe) {
     if (-not (Test-Path -LiteralPath $GhExe)) { return $null }
-    & $GhExe auth status *> $null
-    if ($LASTEXITCODE -ne 0) { return $null }
+    # En Windows PowerShell 5.1 el stderr de un comando nativo se convierte en
+    # error y, con ErrorActionPreference=Stop, 'gh auth status' sin sesion
+    # abortaria el instalador. Se silencia solo durante estas dos llamadas.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
     try {
+        & $GhExe auth status *> $null
+        if ($LASTEXITCODE -ne 0) { return $null }
         $ghLogin = (& $GhExe api user --jq .login 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($ghLogin)) { return $null }
+        return $ghLogin.Trim()
     }
     catch { return $null }
-    if ([string]::IsNullOrWhiteSpace($ghLogin)) { return $null }
-    return $ghLogin.Trim()
+    finally { $ErrorActionPreference = $previous }
 }
 
 function Get-ReleaseAssetArch {
@@ -409,7 +415,15 @@ try {
 
     if ($Login -and -not $ghLogin) {
         Write-Step 'Iniciando login web de GitHub. El codigo de 8 caracteres lo genera gh en este equipo, no GitHub: aparece como "First copy your one-time code" y se pega en https://github.com/login/device. No es el codigo 2FA. Si no lo ves, Ctrl+C y repite: se genera uno nuevo.'
-        & $script:GhostPath auth login --hostname github.com --git-protocol https --web
+        # stderr del comando nativo no debe abortar el flujo en 5.1.
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $script:GhostPath auth login --hostname github.com --git-protocol https --web
+        }
+        finally {
+            $ErrorActionPreference = $previous
+        }
         $ghLogin = Get-GhLogin $script:GhostPath
     }
 
