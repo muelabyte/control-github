@@ -458,6 +458,10 @@ try {
         Write-Next 'Si no ves el codigo, Ctrl+C y repite el comando: se genera uno nuevo (caduca en ~15 min).'
         Write-Next 'Despues vuelve a ejecutar este script (sin -Login) para fijar el login en AGENTS.md'
     }
+
+    # 'gh auth status' sin sesion deja LASTEXITCODE=1 aunque sea un caso
+    # esperado; el exito del script debe reflejarse como 0 en el proceso.
+    $global:LASTEXITCODE = 0
 }
 catch {
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
