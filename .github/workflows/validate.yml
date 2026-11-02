@@ -82,6 +82,7 @@ jobs:
           $check = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gh.ps1 -Check -Version 2.101.0 -InstallDir $dst -DshHome $dsh 2>&1 | Out-String
           if ($check -notmatch 'requiere -Force') { throw 'Check does not predict the -Force requirement' }
           Write-Host 'Reinstall protection OK'
+          exit 0
 
       - name: Other installation on PATH
         shell: pwsh
@@ -98,6 +99,7 @@ jobs:
           if ($LASTEXITCODE -ne 2) { throw "Expected exit 2 for other installation, got $LASTEXITCODE" }
           if (Test-Path (Join-Path $home2 '.local\bin\gh.exe')) { throw 'Installed a duplicate without -Force' }
           Write-Host 'Other installation blocked OK'
+          exit 0
 
       - name: Repair broken binary
         shell: pwsh
@@ -111,6 +113,7 @@ jobs:
           $version = & (Join-Path $bad 'gh.exe') --version | Select-Object -First 1
           if ($version -notmatch '2\.102') { throw "Repair did not restore gh: $version" }
           Write-Host 'Repair OK'
+          exit 0
 
   linux:
     runs-on: ubuntu-latest
